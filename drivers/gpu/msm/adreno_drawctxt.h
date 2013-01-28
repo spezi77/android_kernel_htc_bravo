@@ -13,6 +13,8 @@
 #ifndef __ADRENO_DRAWCTXT_H
 #define __ADRENO_DRAWCTXT_H
 
+#include <linux/sched.h>
+
 #include "adreno_pm4types.h"
 #include "a2xx_reg.h"
 
@@ -86,6 +88,8 @@ struct gmem_shadow_t {
 };
 
 struct adreno_context {
+	pid_t pid;
+	char pid_name[TASK_COMM_LEN];
 	unsigned int id;
 	unsigned int ib_gpu_time_used;
 	uint32_t flags;
