@@ -85,6 +85,7 @@ struct gmem_shadow_t {
 
 struct adreno_context {
 	unsigned int id;
+	unsigned int ib_gpu_time_used;
 	uint32_t flags;
 	struct kgsl_pagetable *pagetable;
 	struct kgsl_memdesc gpustate;
