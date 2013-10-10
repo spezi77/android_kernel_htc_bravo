@@ -1071,6 +1071,7 @@ static int msm_get_stats(struct msm_sync *sync, void __user *arg)
 
 	rc = 0;
 
+	memset(&stats, 0, sizeof(stats));
 	qcmd = msm_dequeue(&sync->event_q, list_config);
 	BUG_ON(!qcmd);
 
