@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 /* Copyright (c) 2008-2013, The Linux Foundation. All rights reserved.
+=======
+/* Copyright (c) 2008-2011, The Linux Foundation. All rights reserved.
+>>>>>>> db8715f... drivers: gpu: update to .38
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -19,18 +23,14 @@
 #define DEVICE_2D0_NAME "kgsl-2d0"
 #define DEVICE_2D1_NAME "kgsl-2d1"
 
-#define Z180_PACKET_SIZE 15
-#define Z180_PACKET_COUNT 8
-#define Z180_RB_SIZE (Z180_PACKET_SIZE*Z180_PACKET_COUNT \
-			  *sizeof(uint32_t))
-#define Z180_DEVICE(device) \
-		KGSL_CONTAINER_OF(device, struct z180_device, dev)
-
 #define Z180_DEFAULT_PWRSCALE_POLICY  NULL
 
+<<<<<<< HEAD
 /* Wait a maximum of 10 seconds when trying to idle the core */
 #define Z180_IDLE_TIMEOUT (20 * 1000)
 
+=======
+>>>>>>> db8715f... drivers: gpu: update to .38
 struct z180_ringbuffer {
 	unsigned int prevctx;
 	struct kgsl_memdesc      cmdbufdesc;
@@ -43,7 +43,5 @@ struct z180_device {
 	struct z180_ringbuffer ringbuffer;
 	spinlock_t cmdwin_lock;
 };
-
-int z180_dump(struct kgsl_device *, int);
 
 #endif /* __Z180_H */
