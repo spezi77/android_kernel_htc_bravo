@@ -1321,9 +1321,18 @@ int get_img(struct mdp_img *img, struct mdp_blit_req *req,
 			return -EINVAL;
 #endif
 
-#ifdef CONFIG_ANDROID_PMEM
-	if (!get_pmem_file(img->memory_id, start, &vstart, len, srcp_file))
-		return ret;
+#ifdef CONFIG_ION_MSM
+	*ihdlp = ion_import_fd(msmfb->iclient, img->memory_id);
+	if (IS_ERR_OR_NULL(*ihdlp))
+		return -1;
+
+	if (!ion_phys(msmfb->iclient, *ihdlp, start, (size_t *) len))
+		return 0;
+	else
+		return -1;
+#else
+	if (!get_pmem_file(img->memory_id, start, &vstart, len, filep))
+		return 0;
 	else
 		return -EINVAL;
 #endif

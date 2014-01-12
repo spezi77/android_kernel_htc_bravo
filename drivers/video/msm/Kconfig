@@ -990,10 +990,3 @@ if FB_MSM_MDSS
 endif
 endif
 
-config FB_MSM_LOGO
-       bool "Use boot splashscreen"
-       depends on FB_MSM
-       default y
-       help
-        Use logo.rle splash screen at startup
-

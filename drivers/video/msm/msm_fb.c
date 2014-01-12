@@ -4239,45 +4239,15 @@ static int msm_fb_ioctl(struct fb_info *info, unsigned int cmd,
 #endif
 		break;
 
-	case MSMFB_MDP_PP:
-		ret = copy_from_user(&mdp_pp, argp, sizeof(mdp_pp));
-		if (ret)
-			return ret;
-
-		ret = msmfb_handle_pp_ioctl(mfd, &mdp_pp);
-		if (ret == 1)
-			ret = copy_to_user(argp, &mdp_pp, sizeof(mdp_pp));
-		break;
-	case MSMFB_BUFFER_SYNC:
-		ret = copy_from_user(&buf_sync, argp, sizeof(buf_sync));
-		if (ret)
-			return ret;
-
-		ret = msmfb_handle_buf_sync_ioctl(mfd, &buf_sync);
-
-		if (!ret)
-			ret = copy_to_user(argp, &buf_sync, sizeof(buf_sync));
-		break;
-
-	case MSMFB_DISPLAY_COMMIT:
-		ret = msmfb_display_commit(info, argp);
-		break;
-
-	case MSMFB_METADATA_GET:
-		ret = copy_from_user(&mdp_metadata, argp, sizeof(mdp_metadata));
-		if (ret)
-			return ret;
-		ret = msmfb_get_metadata(mfd, &mdp_metadata);
-		if (!ret)
-			ret = copy_to_user(argp, &mdp_metadata,
-				sizeof(mdp_metadata));
-
-		break;
-
-	default:
-		MSM_FB_INFO("MDP: unknown ioctl (cmd=%x) received!\n", cmd);
-		ret = -EINVAL;
-		break;
+#ifdef CONFIG_FB_MSM_LOGO
+	if (!load_565rle_image(INIT_IMAGE_FILE)) {
+		/* Flip buffer */
+		msmfb->update_info.left = 0;
+		msmfb->update_info.top = 0;
+		msmfb->update_info.eright = info->var.xres;
+		msmfb->update_info.ebottom = info->var.yres;
+		msmfb_pan_update(info, 0, 0, fb->var.xres,
+				 fb->var.yres, 0, 1);
 	}
 
 	return ret;
