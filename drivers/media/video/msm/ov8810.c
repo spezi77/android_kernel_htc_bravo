@@ -63,9 +63,9 @@
 #include <linux/earlysuspend.h>
 #include <linux/wakelock.h>
 #include <linux/slab.h>
-#include <media/msm_camera_sensor.h>
+#include <media/msm_camera.h>
 #include <mach/gpio.h>
-#include <mach/camera-7x30.h>
+#include <mach/camera.h>
 #include <mach/vreg.h>
 #include <asm/mach-types.h>
 #include "ov8810.h"
@@ -710,7 +710,7 @@ struct ov8810_waitevent{
 static struct ov8810_waitevent ov8810_event;
 
 static DECLARE_WAIT_QUEUE_HEAD(ov8810_wait_queue);
-DEFINE_MUTEX(ov8810_sem);
+DEFINE_SEMAPHORE(ov8810_sem);
 
 
 /*=============================================================*/
@@ -784,8 +784,8 @@ retry:
 		printk(KERN_ERR "starting read retry policy count:%d\n", count);
 		udelay(10);
 		count++;
-		if (count < 10) {
-			if (count > 5)
+		if (count < 20) {
+			if (count > 10)
 				udelay(100);
 		} else
 			return rc;
@@ -1603,25 +1603,25 @@ static int32_t initialize_ov8810_registers(void)
 	}
 
 	/*use calibrated LSC table*/
-	if (!sdata->sensor_lc_disable) { /* 0902 disable old LSC method */
-		if (HTC_update_ov8810_lsc_registers()) {
-			pr_info("[CAM][LSC calibration] use calibrated LSC table done!\n");
-		} else {/*use default LSC table*/
-			array_length =
-				sizeof(lsc_table_array) / sizeof(lsc_table_array[0]);
+  if (!sdata->sensor_lc_disable) { /* 0902 disable old LSC method */
+	if (HTC_update_ov8810_lsc_registers()) {
+		pr_info("[CAM][LSC calibration] use calibrated LSC table done!\n");
+	} else {/*use default LSC table*/
+		array_length =
+			sizeof(lsc_table_array) / sizeof(lsc_table_array[0]);
 
-			for (i = 0; i < array_length; i++) {
-				rc = ov8810_i2c_write_b(ov8810_client->addr,
-					lsc_table_array[i].reg_addr,
-					lsc_table_array[i].reg_val);
-			}
-			pr_info("[CAM][LSC calibration] use default LSC table done\n");
+		for (i = 0; i < array_length; i++) {
+			rc = ov8810_i2c_write_b(ov8810_client->addr,
+				lsc_table_array[i].reg_addr,
+				lsc_table_array[i].reg_val);
 		}
-  	} else {
-		/* add streaming on */
-		ov8810_i2c_write_b(ov8810_client->addr,
-		OV8810_REG_MODE_SELECT, OV8810_MODE_SELECT_STREAM);
+		pr_info("[CAM][LSC calibration] use default LSC table done\n");
 	}
+  } else {
+	  /* add streaming on */
+	  ov8810_i2c_write_b(ov8810_client->addr,
+		  OV8810_REG_MODE_SELECT, OV8810_MODE_SELECT_STREAM);
+  }
 	return rc;
 } /* end of initialize_ov8810_ov8m0vc_registers. */
 
@@ -2015,7 +2015,7 @@ static int ov8810_sensor_open_init(struct msm_camera_sensor_info *data)
 	int timeout;
 	pr_info("[CAM]Calling ov8810_sensor_open_init\n");
 
-	mutex_lock(&ov8810_sem);
+	down(&ov8810_sem);
 
 	if (data == NULL) {
 		pr_info("[CAM]data is a NULL pointer\n");
@@ -2028,7 +2028,7 @@ static int ov8810_sensor_open_init(struct msm_camera_sensor_info *data)
 		30*HZ);
 	pr_info("[CAM]wait event : %d timeout:%d\n", ov8810_event.waked_up, timeout);
 	if (timeout == 0) {
-          mutex_unlock(&ov8810_sem);
+		up(&ov8810_sem);
 		return rc;
 	}
 	msm_camio_probe_on(ov8810_pdev);
@@ -2053,10 +2053,6 @@ static int ov8810_sensor_open_init(struct msm_camera_sensor_info *data)
 	pr_info("[CAM]doing clk switch (ov8810)\n");
 	if(data->camera_clk_switch != NULL)
 		data->camera_clk_switch();
-	
-	/* enable mclk first */
-	msm_camio_clk_rate_set(OV8810_DEFAULT_CLOCK_RATE);
-	msleep(20);
 
 	msm_camio_camif_pad_reg_reset();
 	msleep(20);
@@ -2071,6 +2067,11 @@ static int ov8810_sensor_open_init(struct msm_camera_sensor_info *data)
 	gpio_free(data->sensor_pwd);
 	msleep(5);
 
+	/* enable mclk first */
+	msm_camio_clk_rate_set(OV8810_DEFAULT_CLOCK_RATE);
+	msm_camio_camif_pad_reg_reset();
+	msleep(3);
+	/*Pull reset*/
 	rc = gpio_request(data->sensor_reset, "ov8810");
 	if (!rc)
 		gpio_direction_output(data->sensor_reset, 1);
@@ -2147,7 +2148,7 @@ init_fail:
 		ov8810_ctrl = NULL;
 	}
 init_done:
-	mutex_unlock(&ov8810_sem);
+	up(&ov8810_sem);
 	pr_info("[CAM]%s: init_done\n", __func__);
 	return rc;
 
@@ -2460,7 +2461,7 @@ int ov8810_sensor_config(void __user *argp)
 			sizeof(struct sensor_cfg_data)))
 		return -EFAULT;
 
-	mutex_lock(&ov8810_sem);
+	down(&ov8810_sem);
 
 	CDBG("ov8810_sensor_config: cfgtype = %d\n",
 	  cdata.cfgtype);
@@ -2598,7 +2599,7 @@ int ov8810_sensor_config(void __user *argp)
 		}
 
 	prevent_suspend();
-	mutex_unlock(&ov8810_sem);
+	up(&ov8810_sem);
 
 	return rc;
 }
@@ -2610,7 +2611,7 @@ static int ov8810_sensor_release(void)
 {
 	int rc = -EBADF;
 
-	mutex_lock(&ov8810_sem);
+	down(&ov8810_sem);
 	msleep(35);
 
 	if (ov8810_ctrl) {
@@ -2643,7 +2644,7 @@ static int ov8810_sensor_release(void)
 	mdelay(3);
 	allow_suspend();
 	pr_info("[CAM]ov8810_release completed\n");
-	mutex_unlock(&ov8810_sem);
+	up(&ov8810_sem);
 
 	return rc;
 }

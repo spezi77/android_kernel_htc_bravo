@@ -58,7 +58,7 @@
 #define S5K3H1GX_H
 
 #include <linux/types.h>
-#include <mach/camera-7x30.h>
+#include <mach/camera.h>
 
 struct s5k3h1gx_i2c_reg_conf {
 	unsigned short waddr;
