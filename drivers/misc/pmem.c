@@ -18,6 +18,7 @@
 #include <linux/platform_device.h>
 #include <linux/fs.h>
 #include <linux/file.h>
+#include <linux/fmem.h>
 #include <linux/mm.h>
 #include <linux/list.h>
 #include <linux/debugfs.h>
@@ -243,6 +244,10 @@ struct pmem_info {
 	 * map and unmap as needed
 	 */
 	int map_on_demand;
+	/*
+	 * memory will be reused through fmem
+	 */
+	int reusable;
 };
 #define to_pmem_info_id(a) (container_of(a, struct pmem_info, kobj)->id)
 
@@ -504,44 +509,22 @@ RO_PMEM_ATTR(free_quanta);
 
 static ssize_t show_pmem_bits_allocated(int id, char *buf)
 {
-	ssize_t ret = 0;
+	ssize_t ret;
 	unsigned int i;
-	int		used_in_Kb = 0;
-	int		total_used_in_Kb = 0;
 
 	mutex_lock(&pmem[id].arena_mutex);
 
-	ret += scnprintf(buf, PAGE_SIZE,
-		"id: %d\nbitnum\tindex\tquanta allocated\tin MB\n", id);
+	ret = scnprintf(buf, PAGE_SIZE,
+		"id: %d\nbitnum\tindex\tquanta allocated\n", id);
 
 	for (i = 0; i < pmem[id].allocator.bitmap.bitmap_allocs; i++)
-	{
 		if (pmem[id].allocator.bitmap.bitm_alloc[i].bit != -1)
-		{
-			used_in_Kb = pmem[id].allocator.bitmap.bitm_alloc[i].quanta * 4;
 			ret += scnprintf(buf + ret, PAGE_SIZE - ret,
-				"%u\t%u\t%u\t\t\t%u.%3u\n",
+				"%u\t%u\t%u\n",
 				i,
 				pmem[id].allocator.bitmap.bitm_alloc[i].bit,
-				pmem[id].allocator.bitmap.bitm_alloc[i].quanta,
-				used_in_Kb / 1024,    // in MB
-				used_in_Kb % 1024 * 1000 / 1024
+				pmem[id].allocator.bitmap.bitm_alloc[i].quanta
 				);
-			total_used_in_Kb += used_in_Kb;
-		}
-	}
-	ret += scnprintf(buf + ret, PAGE_SIZE - ret,
-		"Total usage: 0x%x (%u.%-3u MB)\n",
-		total_used_in_Kb*1024,
-		total_used_in_Kb / 1024,
-		total_used_in_Kb % 1024 * 1000 / 1024
-		);
-	ret += scnprintf(buf + ret, PAGE_SIZE - ret,
-		"Total allocated pmem size: 0x%lx (%lu.%-3lu MB)\n",
-		pmem[id].size,
-		pmem[id].size / 1024 / 1024,
-		pmem[id].size / 1024 % 1024 * 1000 / 1024
-		);
 
 	mutex_unlock(&pmem[id].arena_mutex);
 	return ret;
@@ -647,10 +630,6 @@ static int get_id(struct file *file)
 static char *get_name(struct file *file)
 {
 	int id = get_id(file);
-
-	if (id >= PMEM_MAX_DEVICES)
-		return NULL;
-
 	return pmem[id].name;
 }
 
@@ -932,12 +911,6 @@ static int pmem_release(struct inode *inode, struct file *file)
 #if PMEM_DEBUG_MSGS
 	char currtask_name[FIELD_SIZEOF(struct task_struct, comm) + 1];
 #endif
-
-	if (id >= PMEM_MAX_DEVICES) {
-		pr_err("pmem: release with out of range index(%d)", id);
-		return -EINVAL;
-	}
-
 	DLOG("releasing memory pid %u(%s) file %p(%ld) dev %s(id: %d)\n",
 		current->pid, get_task_comm(currtask_name, current),
 		file, file_count(file), get_name(file), id);
@@ -1004,11 +977,6 @@ static int pmem_open(struct inode *inode, struct file *file)
 #if PMEM_DEBUG_MSGS
 	char currtask_name[FIELD_SIZEOF(struct task_struct, comm) + 1];
 #endif
-
-	if (id >= PMEM_MAX_DEVICES) {
-		pr_err("pmem: open with out of range index(%d)", id);
-		return -ENODEV;
-	}
 
 	DLOG("pid %u(%s) file %p(%ld) dev %s(id: %d)\n",
 		current->pid, get_task_comm(currtask_name, current),
@@ -1428,12 +1396,6 @@ static int pmem_allocator_system(const int id,
 static pgprot_t pmem_phys_mem_access_prot(struct file *file, pgprot_t vma_prot)
 {
 	int id = get_id(file);
-
-	if (id >= PMEM_MAX_DEVICES) {
-		pr_err("pmem: open with out of range index(%d)", id);
-		return vma_prot;
-	}
-
 #ifdef pgprot_writecombine
 	if (pmem[id].cached == 0 || file->f_flags & O_SYNC)
 		/* on ARMv6 and ARMv7 this expands to Normal Noncached */
@@ -1666,12 +1628,6 @@ static int pmem_mmap(struct file *file, struct vm_area_struct *vma)
 		pr_err("pmem: Invalid file descriptor, no private data\n");
 		return -EINVAL;
 	}
-
-	if (id >= PMEM_MAX_DEVICES) {
-		pr_err("pmem: mmap with out of range index(%d)", id);
-		return -EINVAL;
-	}
-
 	DLOG("pid %u(%s) mmap vma_size %lu on dev %s(id: %d)\n", current->pid,
 		get_task_comm(currtask_name, current), vma_size,
 		get_name(file), id);
@@ -1706,7 +1662,6 @@ static int pmem_mmap(struct file *file, struct vm_area_struct *vma)
 		if (index == -1) {
 			pr_err("pmem: mmap unable to allocate memory"
 				"on %s\n", get_name(file));
-			dump_stack();
 			ret = -ENOMEM;
 			goto error;
 		}
@@ -1812,14 +1767,14 @@ int get_pmem_addr(struct file *file, unsigned long *start,
 		  unsigned long *vstart, unsigned long *len)
 {
 	int ret = -1;
+
 	if (is_pmem_file(file)) {
 		struct pmem_data *data = file->private_data;
-		int id;
 
 		down_read(&data->sem);
-		id = get_id(file);
+		if (has_allocation(file)) {
+			int id = get_id(file);
 
-		if (id < PMEM_MAX_DEVICES && has_allocation(file)) {
 			*start = pmem[id].start_addr(id, data);
 			*len = pmem[id].len(id, data);
 			*vstart = (unsigned long)
@@ -1944,11 +1899,6 @@ void flush_pmem_file(struct file *file, unsigned long offset, unsigned long len)
 		return;
 
 	id = get_id(file);
-	if (id >= PMEM_MAX_DEVICES) {
-		pr_err("pmem: flush with out of range index(%d)", id);
-		return;
-	}
-
 	if (!pmem[id].cached)
 		return;
 
@@ -2034,12 +1984,6 @@ int pmem_cache_maint(struct file *file, unsigned int cmd,
 
 	data = file->private_data;
 	id = get_id(file);
-
-	if (id >= PMEM_MAX_DEVICES) {
-		pr_err("pmem: cache_maint with out of range index(%d)", id);
-		return -EINVAL;
-	}
-
 
 	if (!pmem[id].cached)
 		return 0;
@@ -2250,11 +2194,6 @@ int pmem_remap(struct pmem_region *region, struct file *file,
 	DLOG("operation %#x, region offset %ld, region len %ld\n",
 		operation, region->offset, region->len);
 
-	if (id >= PMEM_MAX_DEVICES) {
-		pr_err("pmem: remap with out of range index(%d)", id);
-		return -EINVAL;
-	}
-
 	if (!is_pmem_file(file)) {
 #if PMEM_DEBUG
 		pr_err("pmem: remap request for non-pmem file descriptor\n");
@@ -2392,13 +2331,6 @@ static void pmem_get_size(struct pmem_region *region, struct file *file)
 	struct pmem_data *data = file->private_data;
 	int id = get_id(file);
 
-	if (id >= PMEM_MAX_DEVICES) {
-		pr_err("pmem: access with out of range index(%d)", id);
-		region->offset = 0;
-		region->len = 0;
-		return;
-	}
-
 	down_read(&data->sem);
 	if (!has_allocation(file)) {
 		region->offset = 0;
@@ -2423,11 +2355,6 @@ static long pmem_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	char currtask_name[
 		FIELD_SIZEOF(struct task_struct, comm) + 1];
 #endif
-
-	if (id >= PMEM_MAX_DEVICES) {
-		pr_err("pmem: ioctl with out of range index(%d)", id);
-		return EINVAL;
-	}
 
 	DLOG("pid %u(%s) file %p(%ld) cmd %#x, dev %s(id: %d)\n",
 		current->pid, get_task_comm(currtask_name, current),
@@ -2593,18 +2520,6 @@ static long pmem_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case PMEM_CONNECT:
 		DLOG("connect\n");
 		return pmem_connect(arg, file);
-
-	case PMEM_CACHE_FLUSH:
-		{
-			struct pmem_region region;
-			DLOG("flush\n");
-			if (copy_from_user(&region, (void __user *)arg,
-					sizeof(struct pmem_region)))
-				return -EFAULT;
-			flush_pmem_file(file, region.offset, region.len);
-			break;
-		}
-
 	case PMEM_CLEAN_INV_CACHES:
 	case PMEM_CLEAN_CACHES:
 	case PMEM_INV_CACHES:
@@ -2862,7 +2777,8 @@ int pmem_setup(struct android_pmem_platform_data *pdata,
 	pmem[id].dev.name = pdata->name;
 	pmem[id].dev.minor = id;
 	pmem[id].dev.fops = &pmem_fops;
-	pr_info("pmem: Initializing %s (user-space) as %s\n",
+	pmem[id].reusable = pdata->reusable;
+	pr_info("pmem: Initializing %s as %s\n",
 		pdata->name, pdata->cached ? "cached" : "non-cached");
 
 	if (misc_register(&pmem[id].dev)) {
@@ -2870,11 +2786,7 @@ int pmem_setup(struct android_pmem_platform_data *pdata,
 		goto err_cant_register_device;
 	}
 
-	if (pdata->start) {
-		pr_info("%s: allocating PMEM region from hard-coded address.\n", __func__);
-		pmem[id].base = pdata->start;
-	} else {
-		pr_info("%s: allocating PMEM region from system memory.\n", __func__);
+	if (!pmem[id].reusable) {
 		pmem[id].base = allocate_contiguous_memory_nomap(pmem[id].size,
 			pmem[id].memory_type, PAGE_SIZE);
 		if (!pmem[id].base) {
@@ -2884,14 +2796,17 @@ int pmem_setup(struct android_pmem_platform_data *pdata,
 		}
 	}
 
-	pr_info("allocating %lu bytes at %p (%lx physical) for %s\n",
-		pmem[id].size, pmem[id].vbase, pmem[id].base, pmem[id].name);
-
-	pmem[id].map_on_demand = pdata->map_on_demand;
+	/* reusable pmem requires map on demand */
+	pmem[id].map_on_demand = pdata->map_on_demand || pdata->reusable;
 	if (pmem[id].map_on_demand) {
-		pmem_vma = get_vm_area(pmem[id].size, VM_IOREMAP);
-		if (!pmem_vma) {
-			pr_err("pmem: Failed to allocate virtual space for "
+		if (pmem[id].reusable) {
+			const struct fmem_data *fmem_info = fmem_get_info();
+			pmem[id].area = fmem_info->area;
+			pmem[id].base = fmem_info->phys;
+		} else {
+			pmem_vma = get_vm_area(pmem[id].size, VM_IOREMAP);
+			if (!pmem_vma) {
+				pr_err("pmem: Failed to allocate virtual space for "
 					"%s\n", pdata->name);
 			goto err_free;
 		}
@@ -2899,7 +2814,8 @@ int pmem_setup(struct android_pmem_platform_data *pdata,
 				" %s\n", (unsigned long) pmem_vma->addr,
 				(unsigned long) pmem_vma->addr + pmem[id].size,
 				pdata->name);
-		pmem[id].area = pmem_vma;
+			pmem[id].area = pmem_vma;
+		}
 	} else
 		pmem[id].area = NULL;
 
@@ -2920,12 +2836,17 @@ int pmem_setup(struct android_pmem_platform_data *pdata,
 	if (pdata->release_region)
 		pmem[id].mem_release = pdata->release_region;
 
+	pr_info("allocating %lu bytes at %lx physical for %s\n",
+		pmem[id].size, pmem[id].base, pmem[id].name);
+
 	return 0;
 
 cleanup_vm:
-	remove_vm_area(pmem_vma);
+	if (!pmem[id].reusable)
+		remove_vm_area(pmem_vma);
 err_free:
-	free_contiguous_memory_by_paddr(pmem[id].base);
+	if (!pmem[id].reusable)
+		free_contiguous_memory_by_paddr(pmem[id].base);
 err_misc_deregister:
 	misc_deregister(&pmem[id].dev);
 err_cant_register_device:
@@ -2967,7 +2888,7 @@ static int pmem_remove(struct platform_device *pdev)
 	pm_runtime_disable(&pdev->dev);
 	if (pmem[id].vbase)
 		iounmap(pmem[id].vbase);
-	if (pmem[id].map_on_demand && pmem[id].area)
+	if (pmem[id].map_on_demand && !pmem[id].reusable && pmem[id].area)
 		free_vm_area(pmem[id].area);
 	if (pmem[id].base)
 		free_contiguous_memory_by_paddr(pmem[id].base);
