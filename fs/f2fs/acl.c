@@ -150,6 +150,7 @@ fail:
 	return ERR_PTR(-EINVAL);
 }
 
+
 struct posix_acl *f2fs_get_acl(struct inode *inode, int type)
 {
 	struct f2fs_sb_info *sbi = F2FS_SB(inode->i_sb);
@@ -200,10 +201,11 @@ static int f2fs_set_acl(struct inode *inode, int type,
 	size_t size = 0;
 	int error;
 
-	if (!test_opt(sbi, POSIX_ACL))
-		return 0;
-	if (S_ISLNK(inode->i_mode))
-		return -EOPNOTSUPP;
+	if (acl) {
+		error = posix_acl_valid(acl);
+		if (error < 0)
+			return error;
+	}
 
 	switch (type) {
 	case ACL_TYPE_ACCESS:
@@ -236,7 +238,7 @@ static int f2fs_set_acl(struct inode *inode, int type,
 		}
 	}
 
-	error = f2fs_setxattr(inode, name_index, "", value, size, ipage);
+	error = f2fs_setxattr(inode, name_index, "", value, size, ipage, 0);
 
 	kfree(value);
 	if (!error)
@@ -245,6 +247,7 @@ static int f2fs_set_acl(struct inode *inode, int type,
 	cond_clear_inode_flag(fi, FI_ACL_MODE);
 	return error;
 }
+
 
 int f2fs_init_acl(struct inode *inode, struct inode *dir, struct page *ipage)
 {
