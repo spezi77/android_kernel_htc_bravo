@@ -1226,9 +1226,11 @@ static int synaptics_ts_resume(struct i2c_client *client)
 #endif
 	scr_suspended = false;
 
+#ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_SWEEP2WAKE
 	// Set real switches based on temp switches
 	s2w_switch = s2w_temp_switch;
 	dt2w_switch = dt2w_temp_switch;
+#endif
 
 	if (ts->debug_log_level > 0)
 		printk(KERN_INFO "[TP] %s: leave\n", __func__);
