@@ -336,7 +336,7 @@ int wldev_set_country(
 	int i;
 	char *broken_ccodes[] = {
 		"AE","AM","AZ","BH","GE","GH","IR","IQ","IL","JO",
-		"KW","LB","OM","QA","SA","SY","TR","TM","YE"
+		"KW","KZ","LB","OM","QA","SA","SY","TR","TM","YE"
 	};
 
 	if (!country_code) {
