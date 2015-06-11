@@ -335,9 +335,8 @@ int wldev_set_country(
 	char smbuf[WLC_IOCTL_SMLEN];
 	int i;
 	char *broken_ccodes[] = {
-		"AM","AZ","BH","GE","IR","IQ","IL","JO","KW",
-		"LB","OM","QA","SA","SY","TR","TM","AE","YE",
-		"GH"
+		"AE","AM","AZ","BH","GE","GH","IR","IQ","IL","JO",
+		"KW","LB","OM","QA","SA","SY","TR","TM","YE"
 	};
 
 	if (!country_code) {
