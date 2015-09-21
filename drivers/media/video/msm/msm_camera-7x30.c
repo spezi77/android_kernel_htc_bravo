@@ -43,6 +43,7 @@
 #include <asm/cacheflush.h>
 #include <linux/rtc.h>
 #include <linux/slab.h>
+#include <linux/pm_qos.h>
 
 #ifdef CONFIG_RAWCHIP
 #include "rawchip/rawchip.h"
@@ -2692,10 +2693,7 @@ static int __msm_release(struct msm_sync *sync)
 		}
 		msm_queue_drain(&sync->pict_q, list_pict);
 
-		/* HTC */
-		wake_unlock(&sync->wake_suspend_lock);
-		wake_unlock(&sync->wake_lock);
-
+		pm_qos_update_request(&sync->idle_pm_qos, PM_QOS_DEFAULT_VALUE);
 		sync->apps_id = NULL;
 		pr_info("[CAM] %s: completed\n", __func__);
 	}
@@ -3192,9 +3190,8 @@ static int __msm_open(struct msm_sync *sync, const char *const apps_id)
 	sync->apps_id = apps_id;
 
 	if (!sync->opencnt) {
-		/* HTC */
-		wake_lock(&sync->wake_suspend_lock);
-		wake_lock(&sync->wake_lock);
+		pm_qos_update_request(&sync->idle_pm_qos,
+				PM_QOS_CPU_DMA_LATENCY);
 
 		atomic_set(&sync->send_output_s, 0);
 		atomic_set(&sync->num_drop_output_s, 0);
@@ -3728,9 +3725,8 @@ static int msm_sync_init(struct msm_sync *sync,
 	msm_queue_init(&sync->pict_q, "pict");
 	msm_queue_init(&sync->vpe_q, "vpe");
 
-	/* HTC */
-	wake_lock_init(&sync->wake_suspend_lock, WAKE_LOCK_SUSPEND, "msm_camera_wake");
-	wake_lock_init(&sync->wake_lock, WAKE_LOCK_IDLE, "msm_camera");
+	pm_qos_add_request(&sync->idle_pm_qos, PM_QOS_CPU_DMA_LATENCY,
+							PM_QOS_DEFAULT_VALUE);
 	if (!sync->sdata->use_rawchip) {
 		rc = msm_camio_probe_on(pdev);
 		if (rc < 0)
@@ -3760,9 +3756,7 @@ static int msm_sync_init(struct msm_sync *sync,
 		pr_err("[CAM] %s: failed to initialize %s\n",
 			__func__,
 			sync->sdata->sensor_name);
-		/* HTC */
-		wake_lock_destroy(&sync->wake_suspend_lock);
-		wake_lock_destroy(&sync->wake_lock);
+		pm_qos_remove_request(&sync->idle_pm_qos);
 		return rc;
 	}
 
@@ -3774,9 +3768,7 @@ static int msm_sync_init(struct msm_sync *sync,
 
 static int msm_sync_destroy(struct msm_sync *sync)
 {
-	/* HTC */
-	wake_lock_destroy(&sync->wake_suspend_lock);
-	wake_lock_destroy(&sync->wake_lock);
+	pm_qos_remove_request(&sync->idle_pm_qos);
 	return 0;
 }
 
