@@ -2245,36 +2245,6 @@ static int adreno_setproperty(struct kgsl_device *device,
 			status = 0;
 		}
 		break;
-	case KGSL_PROP_FAULT_TOLERANCE: {
-			struct kgsl_ft_config ftd;
-
-			if (sizebytes != sizeof(ftd))
-				break;
-
-			if (copy_from_user(&ftd, (void __user *) value,
-							   sizeof(ftd))) {
-				status = -EFAULT;
-				break;
-			}
-
-			if (ftd.ft_policy)
-				adreno_dev->ft_policy = ftd.ft_policy;
-			else
-				adreno_dev->ft_policy = KGSL_FT_DEFAULT_POLICY;
-
-			if (ftd.ft_pf_policy)
-				adreno_dev->ft_pf_policy = ftd.ft_policy;
-			else
-				adreno_dev->ft_pf_policy =
-					KGSL_FT_PAGEFAULT_DEFAULT_POLICY;
-
-			if (ftd.ft_pm_dump)
-				device->pm_dump_enable = 1;
-			else
-				device->pm_dump_enable = 0;
-
-		}
-		break;
 	default:
 		break;
 	}
