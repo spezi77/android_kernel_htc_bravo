@@ -2324,11 +2324,6 @@ int adreno_idle(struct kgsl_device *device)
 		adreno_dev->gpudev->reg_rbbm_status << 2,
 		0x00000000, 0x80000000);
 
-
-	/* If the device clock is off, it's already idle. Don't wake it up */
-	if (!kgsl_pwrctrl_isenabled(device))
-		return 0;
-
 retry:
 	/* First, wait for the ringbuffer to drain */
 	if (adreno_ringbuffer_drain(device, prev_reg_val))
@@ -2618,7 +2613,6 @@ static unsigned int adreno_check_hw_ts(struct kgsl_device *device,
 		kgsl_sharedmem_writel(&device->memstore,
 				KGSL_MEMSTORE_OFFSET(context_id,
 					ts_cmp_enable), enableflag);
-
 		/* Make sure the memstore write gets posted */
 		wmb();
 
@@ -2628,10 +2622,9 @@ static unsigned int adreno_check_hw_ts(struct kgsl_device *device,
 		 * get an interrupt
 		 */
 
-		if (context && device->state != KGSL_STATE_SLUMBER) {
+		if (context && device->state != KGSL_STATE_SLUMBER)
 			adreno_ringbuffer_issuecmds(device, context->devctxt,
 					KGSL_CMD_FLAGS_NONE, NULL, 0);
-		}
 	}
 
 	return 0;
