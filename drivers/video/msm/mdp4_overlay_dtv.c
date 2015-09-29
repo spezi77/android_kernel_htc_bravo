@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2012, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2011-2013, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -305,8 +305,6 @@ static void mdp4_dtv_vsync_irq_ctrl(int cndx, int enable)
 			if (vsync_irq_cnt == 0)
 				vsync_irq_disable(INTR_EXTERNAL_VSYNC,
 						MDP_EXTER_VSYNC_TERM);
-			vctrl->wait_vsync_cnt = 0;
-			complete_all(&vctrl->vsync_comp);
 		}
 	}
 	pr_debug("%s: enable=%d cnt=%d\n", __func__, enable, vsync_irq_cnt);
@@ -341,7 +339,6 @@ void mdp4_dtv_wait4vsync(int cndx)
 	struct vsycn_ctrl *vctrl;
 	struct mdp4_overlay_pipe *pipe;
 	unsigned long flags;
-	int ret;
 
 	if (cndx >= MAX_CONTROLLER) {
 		pr_err("%s: out or range: cndx=%d\n", __func__, cndx);
@@ -362,11 +359,8 @@ void mdp4_dtv_wait4vsync(int cndx)
 		INIT_COMPLETION(vctrl->vsync_comp);
 	vctrl->wait_vsync_cnt++;
 	spin_unlock_irqrestore(&vctrl->spin_lock, flags);
-	/* double the timeout in vsync time stamp generation */
-	ret = wait_for_completion_interruptible_timeout(&vctrl->vsync_comp,
-		msecs_to_jiffies(VSYNC_PERIOD * 8));
-	if (ret <= 0)
-		pr_err("%s timeout ret=%d", __func__, ret);
+
+	wait_for_completion(&vctrl->vsync_comp);
 	mdp4_dtv_vsync_irq_ctrl(cndx, 0);
 	mdp4_stat.wait4vsync1++;
 }
@@ -440,7 +434,6 @@ ssize_t mdp4_dtv_show_event(struct device *dev,
 	ret = wait_for_completion_interruptible_timeout(&vctrl->vsync_comp,
 		msecs_to_jiffies(VSYNC_PERIOD * 4));
 	if (ret <= 0) {
-		complete_all(&vctrl->vsync_comp);
 		vctrl->wait_vsync_cnt = 0;
 		vctrl->vsync_time = ktime_get();
 	}
@@ -682,9 +675,15 @@ int mdp4_dtv_on(struct platform_device *pdev)
 /* timing generator off */
 static void mdp4_dtv_tg_off(struct vsycn_ctrl *vctrl)
 {
+	unsigned long flags;
+
+	spin_lock_irqsave(&vctrl->spin_lock, flags);
+	INIT_COMPLETION(vctrl->vsync_comp);
+	vctrl->wait_vsync_cnt++;
 	MDP_OUTP(MDP_BASE + DTV_BASE, 0); /* turn off timing generator */
-	/* some delay after turning off the tg */
-	msleep(20);
+	spin_unlock_irqrestore(&vctrl->spin_lock, flags);
+
+	mdp4_dtv_wait4vsync(0);
 }
 
 int mdp4_dtv_off(struct platform_device *pdev)
@@ -696,7 +695,6 @@ int mdp4_dtv_off(struct platform_device *pdev)
 	struct vsycn_ctrl *vctrl;
 	struct mdp4_overlay_pipe *pipe;
 	struct vsync_update *vp;
-	int mixer = 0;
 
 	mfd = (struct msm_fb_data_type *)platform_get_drvdata(pdev);
 
@@ -713,9 +711,8 @@ int mdp4_dtv_off(struct platform_device *pdev)
 
 	pipe = vctrl->base_pipe;
 	if (pipe != NULL) {
-		mixer = pipe->mixer_num;
 		/* sanity check, free pipes besides base layer */
-		mdp4_overlay_unset_mixer(mixer);
+		mdp4_overlay_unset_mixer(pipe->mixer_num);
 		if (hdmi_prim_display && mfd->ref_cnt == 0) {
 			/* adb stop */
 			if (pipe->pipe_type == OVERLAY_TYPE_BF)
@@ -725,7 +722,7 @@ int mdp4_dtv_off(struct platform_device *pdev)
 			vctrl->base_pipe = NULL;
 		} else {
 			mdp4_mixer_stage_down(pipe, 1);
-			mdp4_overlay_pipe_free(pipe, 1);
+			mdp4_overlay_pipe_free(pipe);
 			vctrl->base_pipe = NULL;
 		}
 	}
@@ -749,19 +746,6 @@ int mdp4_dtv_off(struct platform_device *pdev)
 
 	ret = panel_next_off(pdev);
 	mdp_footswitch_ctrl(FALSE);
-
-	/*
-	 * clean up ion freelist
-	 * there need two stage to empty ion free list
-	 * therefore need call unmap freelist twice
-	 */
-	mdp4_overlay_iommu_unmap_freelist(mixer);
-	mdp4_overlay_iommu_unmap_freelist(mixer);
-
-	if (vctrl->vsync_irq_enabled) {
-		vctrl->vsync_irq_enabled = 0;
-		mdp4_dtv_vsync_irq_ctrl(cndx, 0);
-	}
 
 	/* Mdp clock disable */
 	mdp_clk_ctrl(0);
@@ -1185,7 +1169,7 @@ void mdp4_dtv_overlay(struct msm_fb_data_type *mfd)
 	}
 
 	mdp4_overlay_mdp_perf_upd(mfd, 1);
-	mdp4_dtv_pipe_commit(0, 0);
+	mdp4_dtv_pipe_commit(0, 1);
 	mdp4_overlay_mdp_perf_upd(mfd, 0);
 	mutex_unlock(&mfd->dma->ov_mutex);
 }
