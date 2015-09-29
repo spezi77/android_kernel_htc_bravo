@@ -576,8 +576,6 @@ void mdp4_overlay0_done_dsi_cmd(int cndx);
 void mdp4_primary_rdptr(void);
 void mdp4_dsi_cmd_overlay(struct msm_fb_data_type *mfd);
 int mdp4_overlay_commit(struct fb_info *info);
-int mdp4_dsi_video_pipe_commit(int cndx, int wait);
-int mdp4_dsi_cmd_pipe_commit(int cndx, int wait);
 int mdp4_lcdc_pipe_commit(int cndx, int wait);
 int mdp4_dsi_cmd_update_cnt(int cndx);
 void mdp4_dsi_rdptr_init(int cndx);
@@ -706,6 +704,8 @@ void mdp4_dsi_cmd_overlay_blt(struct msm_fb_data_type *mfd,
 void mdp4_dsi_video_overlay_blt(struct msm_fb_data_type *mfd,
 					struct msmfb_overlay_blt *req);
 void mdp4_dsi_video_base_swap(int cndx, struct mdp4_overlay_pipe *pipe);
+int mdp4_dsi_video_pipe_commit(int cndx, int wait);
+int mdp4_dsi_cmd_pipe_commit(int cndx, int wait);
 
 #ifdef CONFIG_FB_MSM_MDP40
 static inline void mdp3_dsi_cmd_dma_busy_wait(struct msm_fb_data_type *mfd)
@@ -734,6 +734,14 @@ static inline void mdp4_dsi_video_blt_start(struct msm_fb_data_type *mfd)
 }
 static inline void mdp4_dsi_video_blt_stop(struct msm_fb_data_type *mfd)
 {
+}
+static inline int mdp4_dsi_video_pipe_commit(int cndx, int wait)
+{
+	return -ENODEV;
+}
+static inline int mdp4_dsi_cmd_pipe_commit(int cndx, int wait)
+{
+	return -ENODEV;
 }
 static inline void mdp4_dsi_overlay_blt(
 	struct msm_fb_data_type *mfd, struct msmfb_overlay_blt *req)
@@ -905,6 +913,7 @@ static inline int mdp4_overlay_borderfill_supported(void)
 int mdp4_overlay_borderfill_supported(void);
 #endif
 
+#ifdef CONFIG_FB_MSM_WRITEBACK_MSM_PANEL
 int mdp4_overlay_writeback_on(struct platform_device *pdev);
 int mdp4_overlay_writeback_off(struct platform_device *pdev);
 void mdp4_writeback_overlay(struct msm_fb_data_type *mfd);
@@ -920,6 +929,12 @@ void mdp4_writeback_dma_stop(struct msm_fb_data_type *mfd);
 int mdp4_writeback_init(struct fb_info *info);
 int mdp4_writeback_terminate(struct fb_info *info);
 int mdp4_writeback_set_mirroring_hint(struct fb_info *info, int hint);
+#else
+static inline int mdp4_overlay_writeback_off(struct platform_device *pdev)
+{
+	return -ENODEV;
+}
+#endif
 
 uint32_t mdp_block2base(uint32_t block);
 int mdp_hist_lut_config(struct mdp_hist_lut_data *data);
