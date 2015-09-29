@@ -1,4 +1,4 @@
-/* Copyright (c) 2012, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2013, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -168,7 +168,6 @@ int kgsl_add_fence_event(struct kgsl_device *device,
 fail_event:
 fail_copy_fd:
 	/* clean up sync_fence_install */
-	sync_fence_put(fence);
 	put_unused_fd(priv.fence_fd);
 fail_fd:
 	/* clean up sync_fence_create */
