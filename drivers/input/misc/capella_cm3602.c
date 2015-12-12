@@ -328,3 +328,4 @@ static int __init capella_cm3602_init(void)
 }
 
 device_initcall(capella_cm3602_init);
+

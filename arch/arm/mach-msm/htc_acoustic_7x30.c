@@ -23,9 +23,9 @@
 #include <linux/uaccess.h>
 #include <linux/slab.h>
 #include <linux/mfd/msm-adie-codec.h>
-#include <mach/qdsp5v2/snddev_icodec.h>
-#include <mach/qdsp5v2/audio_dev_ctl.h>
-#include <mach/qdsp5v2/audio_acdb.h>
+#include <mach/qdsp5v2_2x/snddev_icodec.h>
+#include <mach/qdsp5v2_2x/audio_dev_ctl.h>
+#include <mach/qdsp5v2_2x/audio_acdb.h>
 #include <mach/htc_headset_mgr.h>
 
 #include <mach/msm_smd.h>
@@ -56,7 +56,7 @@
 #define ACOUSTIC_GET_BEATS_STATE	_IOW(ACOUSTIC_IOCTL_MAGIC, 41, unsigned)
 #define ACOUSTIC_ENABLE_BEATS		_IOW(ACOUSTIC_IOCTL_MAGIC, 42, unsigned)
 
-#define D(fmt, args...) do { } while (0)
+#define D(fmt, args...) printk(KERN_INFO "[AUD] htc-acoustic: "fmt, ##args)
 #define E(fmt, args...) printk(KERN_ERR "[AUD] htc-acoustic: "fmt, ##args)
 
 #define SHARE_PAGES 4

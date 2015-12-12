@@ -612,3 +612,4 @@ module_exit(light_sensor_exit);
 
 MODULE_DESCRIPTION("HTC LIGHT SENSOR");
 MODULE_LICENSE("GPL");
+

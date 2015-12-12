@@ -945,3 +945,4 @@ struct clk_ops clk_ops_cdiv = {
 	.round_rate = cdiv_clk_round_rate,
 	.is_local = local_clk_is_local,
 };
+

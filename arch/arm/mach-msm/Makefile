@@ -157,11 +157,21 @@ obj-$(CONFIG_MSM_IPC_ROUTER)+= ipc_socket.o
 obj-$(CONFIG_MSM_DALRPC) += dal.o
 obj-$(CONFIG_MSM_DALRPC_TEST) += dal_remotetest.o
 #obj-$(CONFIG_ARCH_MSM7X30) += dal_axi.o
-obj-$(CONFIG_ARCH_MSM7X30) += dal_axi.o htc_sdservice.o
+obj-$(CONFIG_ARCH_MSM7X30) += dal_axi.o htc_drm.o htc_sdservice.o
 obj-$(CONFIG_ARCH_MSM7X27A) += dal_axi.o
-obj-$(CONFIG_MSM7KV2_AUDIO) += qdsp5v2/
+obj-$(CONFIG_MSM_ADSP) += qdsp5/
+#obj-$(CONFIG_MSM7KV2_AUDIO) += qdsp5v2/
+obj-$(CONFIG_MSM7KV2_AUDIO) += qdsp5v2_2x/
 obj-$(CONFIG_MSM7KV2_AUDIO) += htc_acoustic_7x30.o htc_acdb_7x30.o
 
+ifndef CONFIG_MACH_HTCLEO
+obj-$(CONFIG_MSM_QDSP6) += qdsp6/
+else
+obj-y += dex_comm.o
+obj-$(CONFIG_MSM_QDSP6) += qdsp6_1550/
+endif
+obj-$(CONFIG_MSM8X60_AUDIO) += qdsp6v2_1x/
+obj-$(CONFIG_MSM_AUDIO_QDSP6) += qdsp6v2/
 obj-$(CONFIG_MSM_HW3D) += hw3d.o
 ifdef CONFIG_PM
 	obj-$(CONFIG_ARCH_MSM8960) += pm-8x60.o
@@ -216,6 +226,11 @@ ifdef CONFIG_CPU_IDLE
 	obj-$(CONFIG_ARCH_MSM8X60) += cpuidle.o
 	obj-$(CONFIG_ARCH_MSM9615) += cpuidle.o
 endif
+
+obj-$(CONFIG_HTC_35MM_JACK) += htc_35mm_jack.o
+obj-$(CONFIG_ARCH_MSM_FLASHLIGHT) += msm_flashlight.o
+obj-$(CONFIG_HTC_ACOUSTIC_QSD) += htc_acoustic_qsd.o
+
 
 obj-$(CONFIG_ARCH_FSM9XXX) += devices-fsm9xxx.o
 obj-$(CONFIG_ARCH_FSM9XXX) += clock-fsm9xxx.o clock-local.o acpuclock-fsm9xxx.o
@@ -287,6 +302,15 @@ obj-$(CONFIG_ARCH_MSMCOPPER) += board-copper.o board-dt.o
 obj-$(CONFIG_ARCH_MSM8960) += devices_htc.o htc_wifi_nvs.o htc_awb_cal.o
 obj-$(CONFIG_ARCH_MSM8X60) += devices_htc.o htc_wifi_nvs.o sysinfo-8x60.o emmc_partitions.o htc_awb_cal.o
 
+obj-$(CONFIG_MACH_BRAVO) += board-bravo.o board-bravo-panel.o
+obj-$(CONFIG_MACH_BRAVO) += board-bravo-keypad.o board-bravo-mmc.o ieee754-df.o
+obj-$(CONFIG_MACH_BRAVO) += board-bravo-rfkill.o htc_wifi_nvs.o htc_awb_cal.o
+obj-$(CONFIG_MACH_BRAVO) += board-bravo-wifi.o board-bravo-audio.o
+obj-$(CONFIG_MACH_BRAVO) += msm_vibrator.o
+obj-$(CONFIG_MACH_BRAVO) += devices_htc.o
+obj-$(CONFIG_MACH_BRAVO) += board-bravo-microp.o htc_set_perflock.o
+obj-$(CONFIG_MACH_BRAVO) += board-bravo-tpa2018d1.o
+obj-$(CONFIG_MACH_BRAVO) += board-bravo-smb329.o
 ifeq ($(CONFIG_ARCH_MSM8X60_LTE),y)
 obj-$(CONFIG_ARCH_MSM8X60_LTE) += 8x60-lte/
 else

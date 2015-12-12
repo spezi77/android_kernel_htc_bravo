@@ -528,3 +528,4 @@ void msm_camio_set_perf_lvl(enum msm_bus_perf_setting);
 
 void msm_camio_disable_csi_log(void);
 #endif
+

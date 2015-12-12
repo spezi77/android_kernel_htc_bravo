@@ -31,7 +31,7 @@
 #include <linux/timer.h>
 #include <linux/remote_spinlock.h>
 #include <linux/pm_qos.h>
-##include <linux/pm_qos_params.h>
+//#include <linux/pm_qos_params.h>
 #include <mach/gpio.h>
 
 
@@ -702,7 +702,7 @@ msm_i2c_probe(struct platform_device *pdev)
 //   Change order of operations in this function.
 //
 
-#if defined(CONFIG_ARCH_QSD8X50) && defined(CONFIG_REGULATOR_TPS65023)
+#if defined(CONFIG_ARCH_QSD8X50)
 
 	i2c_set_adapdata(&dev->adap_pri, dev);
 	dev->adap_pri.algo = &msm_i2c_algo;
@@ -734,7 +734,8 @@ msm_i2c_probe(struct platform_device *pdev)
 	/* Config GPIOs for primary and secondary lines */
 	pdata->msm_i2c_config_gpio(dev->adap_pri.nr, 1);
 	pdata->msm_i2c_config_gpio(dev->adap_aux.nr, 1);
-	clk_disable(dev->clk);
+	clk_disable_unprepare(dev->clk);
+	clk_prepare(dev->clk);
 	setup_timer(&dev->pwr_timer, msm_i2c_pwr_timer, (unsigned long) dev);
 
 
@@ -756,7 +757,7 @@ msm_i2c_probe(struct platform_device *pdev)
 err_i2c_add_adapter_failed:
 	free_irq(dev->irq, dev);
 err_request_irq_failed:
-	clk_disable(clk);
+	clk_disable_unprepare(clk);
 	iounmap(dev->base);
 err_ioremap_failed:
 	kfree(dev);

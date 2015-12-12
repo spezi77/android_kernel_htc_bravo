@@ -387,6 +387,13 @@ config MACH_PRIMODS
 		help
 			Support for Primods (PDA phone).
 
+config MACH_BRAVO
+		depends on ARCH_QSD8X50
+		default n
+		bool "HTC Bravo"
+		help
+			Select this to support the HTC Bravo device
+
 config MACH_MSM7625A_SURF
         depends on ARCH_MSM7X27A
         depends on !MSM_STACKED_MEMORY
@@ -951,6 +958,7 @@ config MSM_AMSS_VERSION
 	default 3200 if MSM_AMSS_VERSION_3200
 	default 1170 if MSM_AMSS_VERSION_1170
 	default 1200 if MSM_AMSS_VERSION_1200
+	default 1550 if MSM_AMSS_VERSION_1550
 
 choice
 	prompt "AMSS modem firmware version"
@@ -992,6 +1000,9 @@ choice
 
 	config MSM_AMSS_VERSION_1200
 		bool "1.2.00"
+
+	config MSM_AMSS_VERSION_1550
+		bool "1.5.50"
 
 endchoice
 
@@ -1184,6 +1195,12 @@ config HTC_HEADSET
 	 headset, on the trout platform. Can be used with the msm serial
 	 debugger, but not with serial console.
 
+config HTC_35MM_JACK
+	bool "HTC 3.5mm headset jack"
+	default n
+	help
+	 Provides support for 3.5mm headset jack devices, like wired headsets.
+
 config TROUT_BATTCHG
 	depends on MACH_TROUT && POWER_SUPPLY
 	default y
@@ -1204,10 +1221,31 @@ config HTC_BATTCHG_SMEM
         default n
         bool "Read Battery Info via SMEM"
 
+config HTC_PWRSPLY
+	depends on MSM_ONCRPCROUTER && POWER_SUPPLY && !TROUT_BATTCHG
+	default y
+	bool "HTC Power supply driver"
+	help
+	Used by HTC devices with a dedicated battery gauge"
+
 config HTC_PWRSINK
 	depends on MSM_SMD
 	default n
 	bool "HTC Power Sink Driver"
+
+config ARCH_MSM_FLASHLIGHT
+	bool "Flashlight Driver"
+	depends on ARCH_MSM
+	help
+	The flashlight driver is for MSM series.
+
+config HTC_ACOUSTIC_QSD
+	tristate "HTC acoustic driver for QSD"
+	depends on ARCH_QSD8X50
+	default y
+	help
+	Provides user space use shared memory allocate by using RPC code.
+	Provides headset amp, mic bias and speaker amp control.
 
 config BUILD_OMA_DM
 	bool "Build in OMA-DM fixes"

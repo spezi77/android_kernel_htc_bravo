@@ -6836,3 +6836,4 @@ MACHINE_START(PRIMOU, "primou")
 	.timer = &msm_timer,
 	.init_early = primou_init_early,
 MACHINE_END
+

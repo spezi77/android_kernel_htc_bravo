@@ -56,7 +56,8 @@
 /* mv = (750mV + (raw * 25mV)) * (2 - VREF_SEL) */
 #define VDD_RAW(mv) (((MV(mv) / V_STEP) - 30) | VREG_DATA)
 
-#ifdef CONFIG_MACH_SAGA
+<<<<<<< HEAD
+#ifdef (CONFIG_MACH_SAGA || CONFIG_MACH_BRAVO)
 #define MAX_AXI_KHZ 192000
 #else
 #define MAX_AXI_KHZ 201600
@@ -113,12 +114,20 @@ static struct pll pll2_tbl[] = {
 	{  98, 1, 3, 0 }, /* 1900 MHz */
 	{ 103, 1, 3, 0 }, /* 2016 MHz */
 #else
+#ifdef CONFIG_MACH_BRAVO
+	{  42, 0, 1, 0 }, /*  806 MHz */
+	{  53, 1, 3, 0 }, /* 1024 MHz */
+	{ 125, 0, 1, 1 }, /* 1200 MHz */
+	{  73, 0, 1, 0 }, /* 1401 MHz */
+	{  78, 0, 1, 0 }, /* 1500 MHz */
+#else
 	{  42, 0, 1, 0 }, /*  806 MHz */
 	{  53, 1, 3, 0 }, /* 1024 MHz */
 	{ 125, 0, 1, 1 }, /* 1200 MHz */
 	{  68, 0, 1, 0 }, /* 1305 MHz */
 	{  73, 0, 1, 0 }, /* 1401 MHz */
 	{  78, 0, 1, 0 }, /* 1500 MHz */
+#endif
 #endif
 };
 
@@ -143,6 +152,7 @@ static struct clk *acpuclk_sources[MAX_SOURCE];
  * know all the h/w requirements.
  */
 static struct clkctl_acpu_speed acpu_freq_tbl[] = {
+<<<<<<< HEAD
 #ifdef CONFIG_MACH_SAGA
 	{ 0, 24576,  LPXO,     0, 0,  30720000,  800, VDD_RAW(800) },
 	{ 0, 61440,  PLL_3,    5, 11, 61440000,  800, VDD_RAW(800) },
@@ -168,6 +178,25 @@ static struct clkctl_acpu_speed acpu_freq_tbl[] = {
 	{ 1, 1804800, PLL_2, 3, 0, 192000000, 1400, VDD_RAW(1400), &pll2_tbl[11]},
 	{ 1, 1920000, PLL_2, 3, 0, 192000000, 1450, VDD_RAW(1450), &pll2_tbl[12]},
 	{ 1, 2016000, PLL_2, 3, 0, 192000000, 1500, VDD_RAW(1500), &pll2_tbl[13]},
+#else
+#ifdef CONFIG_MACH_BRAVO
+	{ 0, 24576,  LPXO, 0, 0,  30720000,  1000, VDD_RAW(1000) },
+	{ 0, 61440,  PLL_3,    5, 11, 61440000,  1000, VDD_RAW(1000) },
+	{ 0, 122880, PLL_3,    5, 5,  61440000,  1000, VDD_RAW(1000) },
+	{ 0, 184320, PLL_3,    5, 4,  61440000,  1000, VDD_RAW(1000) },
+	{ 0, MAX_AXI_KHZ, AXI, 1, 0, 61440000, 1000, VDD_RAW(1000) },
+	{ 1, 245760, PLL_3,    5, 2,  61440000,  1000, VDD_RAW(1000) },
+	{ 1, 368640, PLL_3,    5, 1,  122800000, 1050, VDD_RAW(1050) },
+	/* AXI has MSMC1 implications. See above. */
+	{ 1, 768000, PLL_1,    2, 0,  153600000, 1100, VDD_RAW(1100) },
+	/*
+	 * AXI has MSMC1 implications. See above.
+	 */
+	{ 1, 806400,  PLL_2, 3, 0, UINT_MAX, 1100, VDD_RAW(1100), &pll2_tbl[0]},
+	{ 1, 1024000, PLL_2, 3, 0, UINT_MAX, 1200, VDD_RAW(1200), &pll2_tbl[1]},
+	{ 1, 1200000, PLL_2, 3, 0, UINT_MAX, 1200, VDD_RAW(1200), &pll2_tbl[2]},
+	{ 1, 1401600, PLL_2, 3, 0, UINT_MAX, 1250, VDD_RAW(1250), &pll2_tbl[3]},
+	{ 1, 1497600, PLL_2, 3, 0, UINT_MAX, 1250, VDD_RAW(1250), &pll2_tbl[4]},
 #else
 	{ 0, 24576,  LPXO,     0, 0,  30720000,  900, VDD_RAW(900) },
 	{ 0, 61440,  PLL_3,    5, 11, 61440000,  900, VDD_RAW(900) },
@@ -405,6 +434,7 @@ static unsigned long acpuclk_7x30_get_rate(int cpu)
  *---------------------------------------------------------------------------*/
 
 static void __devinit acpuclk_hw_init(void)
+//static void __init acpuclk_hw_init(void)
 {
 	struct clkctl_acpu_speed *s;
 	uint32_t div, sel, src_num;
@@ -483,6 +513,7 @@ static void __devinit acpuclk_hw_init(void)
 
 /* Initalize the lpj field in the acpu_freq_tbl. */
 static void __devinit lpj_init(void)
+//static void __init lpj_init(void)
 {
 	int i;
 	const struct clkctl_acpu_speed *base_clk = drv_state.current_speed;
@@ -548,6 +579,12 @@ void __devinit pll2_fixup(void)
 	pr_err("Unknown PLL2 lval %d\n", pll2_l);
 	BUG();
 #endif
+=======
+	}
+
+	pr_err("Unknown PLL2 lval %d\n", pll2_l);
+	BUG();
+>>>>>>> 37b2fe0... Fast Forward: add HTC BRAVO files and update configs
 }
 
 #define RPM_BYPASS_MASK	(1 << 3)
@@ -580,6 +617,7 @@ static struct acpuclk_data acpuclk_7x30_data = {
 };
 
 static int __devinit acpuclk_7x30_probe(struct platform_device *pdev)
+//static int __init acpuclk_7x30_init(struct acpuclk_soc_data *soc_data)
 {
 	pr_info("%s()\n", __func__);
 
@@ -644,3 +682,7 @@ static int __init acpuclk_7x30_init(void)
 	return platform_driver_register(&acpuclk_7x30_driver);
 }
 postcore_initcall(acpuclk_7x30_init);
+/*struct acpuclk_soc_data acpuclk_7x30_soc_data __initdata = {
+	.init = acpuclk_7x30_init,
+};
+*/

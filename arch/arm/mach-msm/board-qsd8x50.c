@@ -174,7 +174,7 @@ static void __init qsd8x50_init_mmc(void)
 static void __init qsd8x50_map_io(void)
 {
 	msm_map_qsd8x50_io();
-	msm_clock_init(msm_clocks_8x50, msm_num_clocks_8x50);
+	msm_clock_init(&qds8x50_clock_init_data);
 }
 
 static void __init qsd8x50_init_irq(void)
@@ -189,7 +189,6 @@ static void __init qsd8x50_init(void)
 	msm_device_hsusb.dev.parent = &msm_device_otg.dev;
 	msm_device_hsusb_host.dev.parent = &msm_device_otg.dev;
 	platform_add_devices(devices, ARRAY_SIZE(devices));
-	qsd8x50_init_mmc();
 }
 
 MACHINE_START(QSD8X50_SURF, "QCT QSD8X50 SURF")
