@@ -257,11 +257,6 @@ static void usb_config_work_func(struct work_struct *work)
 	struct usb_string *s;
 
 	DIAG_INFO("%s: dev=%s\n", __func__, (ctxt == mdmctxt)?DIAG_MDM:DIAG_LEGACY);
-#if DIAG_XPST
-	ctxt->tx_count = ctxt->rx_count = 0;
-	ctxt->usb_in_count = ctxt->usb_out_count = 0;
-	driver->diag_smd_count = driver->diag_qdsp_count = 0;
-#endif
 	if (ctxt->ch.notify && ctxt == legacyctxt)
 		ctxt->ch.notify(ctxt->ch.priv, USB_DIAG_CONNECT, NULL);
 
@@ -342,32 +337,6 @@ static void diag_read_complete(struct usb_ep *ep,
 	spin_unlock_irqrestore(&ctxt->lock, flags);
 
 	ctxt->dpkts_tomodem++;
-#if DIAG_XPST
-#ifdef HTC_DIAG_DEBUG
-	DIAG_INFO("%s: dev=%s\n", __func__, (ctxt == mdmctxt)?DIAG_MDM:DIAG_LEGACY);
-	print_hex_dump(KERN_DEBUG, "from PC: ", DUMP_PREFIX_ADDRESS, 16, 1,
-			req->buf, req->actual, 1);
-#endif
-
-	cmd_id = *((unsigned short *)req->buf);
-
-	if ((ctxt != mdmctxt) && if_route_to_userspace(ctxt, cmd_id)) {
-		xpst_req = xpst_req_get(ctxt, &ctxt->rx_req_idle);
-		if (xpst_req) {
-			xpst_req->actual = req->actual;
-			xpst_req->status = req->status;
-			memcpy(xpst_req->buf, req->buf, req->actual);
-			xpst_req_put(ctxt, &ctxt->rx_req_user, xpst_req);
-			wake_up(&ctxt->read_wq);
-			driver->nohdlc = 1;
-		} else
-			DIAG_INFO("%s No enough xpst_req \n", __func__);
-	} else {
-		driver->nohdlc = 0;
-		ctxt->tx_count += req->actual;
-	}
-	ctxt->usb_out_count += req->actual;
-#endif
 	if (ctxt->ch.notify)
 		ctxt->ch.notify(ctxt->ch.priv, USB_DIAG_READ_DONE, d_req);
 }
@@ -407,14 +376,6 @@ struct usb_diag_ch *usb_diag_open(const char *name, void *priv,
 		if (!strcmp(name, DIAG_LEGACY)) {
 			legacyctxt = ctxt = &_context;
 			legacych = ch = &legacyctxt->ch;
-#if DIAG_XPST
-			misc_register(&htc_diag_device_fops);
-			/*DMrounter*/
-			misc_register(&diag2arm9_device);
-			ctxt->usb_in_count = ctxt->usb_out_count = 0;
-			ctxt->tx_count = ctxt->rx_count = 0;
-			driver->diag_smd_count = driver->diag_qdsp_count = 0;
-#endif
 		}
 #if defined(CONFIG_USB_ANDROID_MDM9K_DIAG)
 		else if (!strcmp(name, DIAG_MDM)) {
