@@ -377,13 +377,12 @@ struct msm_mapped_buffer *msm_subsystem_map_buffer(unsigned long phys,
 			partition_no = msm_subsystem_get_partition_no(
 								subsys_ids[i]);
 
-			ret = msm_allocate_iova_address(domain_no,
+			iova_start = msm_allocate_iova_address(domain_no,
 						partition_no,
 						map_size,
-						max(min_align, SZ_4K),
-						&iova_start);
+						max(min_align, SZ_4K));
 
-			if (ret) {
+			if (!iova_start) {
 				pr_err("%s: could not allocate iova address\n",
 					__func__);
 				continue;
@@ -395,8 +394,7 @@ struct msm_mapped_buffer *msm_subsystem_map_buffer(unsigned long phys,
 					temp_phys += SZ_4K,
 					temp_va += SZ_4K) {
 				ret = iommu_map(d, temp_va, temp_phys,
-						SZ_4K,
-						(IOMMU_READ | IOMMU_WRITE));
+						 get_order(SZ_4K), 0);
 				if (ret) {
 					pr_err("%s: could not map iommu for"
 						" domain %p, iova %lx,"
@@ -410,8 +408,7 @@ struct msm_mapped_buffer *msm_subsystem_map_buffer(unsigned long phys,
 
 			if (flags & MSM_SUBSYSTEM_MAP_IOMMU_2X)
 				msm_iommu_map_extra
-					(d, temp_va, length, SZ_4K,
-					(IOMMU_READ | IOMMU_WRITE));
+					(d, temp_va, length, SZ_4K, 0);
 		}
 
 	}
