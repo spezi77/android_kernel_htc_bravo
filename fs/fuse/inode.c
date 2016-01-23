@@ -1004,9 +1004,14 @@ static int fuse_fill_super(struct super_block *sb, void *data, int silent)
 
 	err = -ENOMEM;
 	root = fuse_get_root_inode(sb, d.rootmode);
-	root_dentry = d_make_root(root);
-	if (!root_dentry)
+	if (!root)
 		goto err_put_conn;
+
+	root_dentry = d_alloc_root(root);
+	if (!root_dentry) {
+		iput(root);
+		goto err_put_conn;
+	}
 	/* only now - we want root dentry with NULL ->d_op */
 	sb->s_d_op = &fuse_dentry_operations;
 

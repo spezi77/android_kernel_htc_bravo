@@ -1451,7 +1451,16 @@ struct dentry *d_instantiate_unique(struct dentry *entry, struct inode *inode)
 
 EXPORT_SYMBOL(d_instantiate_unique);
 
-struct dentry *d_make_root(struct inode *root_inode)
+/**
+ * d_alloc_root - allocate root dentry
+ * @root_inode: inode to allocate the root for
+ *
+ * Allocate a root ("/") dentry for the inode given. The inode is
+ * instantiated and returned. %NULL is returned if there is insufficient
+ * memory or the inode passed is %NULL.
+ */
+ 
+struct dentry * d_alloc_root(struct inode * root_inode)
 {
 	struct dentry *res = NULL;
 
@@ -1461,12 +1470,10 @@ struct dentry *d_make_root(struct inode *root_inode)
 		res = __d_alloc(root_inode->i_sb, &name);
 		if (res)
 			d_instantiate(res, root_inode);
-		else
-			iput(root_inode);
 	}
 	return res;
 }
-EXPORT_SYMBOL(d_make_root);
+EXPORT_SYMBOL(d_alloc_root);
 
 static struct dentry * __d_find_any_alias(struct inode *inode)
 {
@@ -1479,14 +1486,7 @@ static struct dentry * __d_find_any_alias(struct inode *inode)
 	return alias;
 }
 
-/**
- * d_find_any_alias - find any alias for a given inode
- * @inode: inode to find an alias for
- *
- * If any aliases exist for the given inode, take and return a
- * reference for one of them.  If no aliases exist, return %NULL.
- */
-struct dentry *d_find_any_alias(struct inode *inode)
+static struct dentry * d_find_any_alias(struct inode *inode)
 {
 	struct dentry *de;
 
@@ -1495,7 +1495,7 @@ struct dentry *d_find_any_alias(struct inode *inode)
 	spin_unlock(&inode->i_lock);
 	return de;
 }
-EXPORT_SYMBOL(d_find_any_alias);
+
 
 /**
  * d_obtain_alias - find or allocate a dentry for a given inode
