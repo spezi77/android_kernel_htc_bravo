@@ -17,8 +17,6 @@
  * Author: Paul Reioux (reioux@gmail.com) Modified for intelliactive
  */
 
-#define DEBUG false
-
 #include <linux/cpu.h>
 #include <linux/cpumask.h>
 #include <linux/cpufreq.h>
@@ -474,7 +472,7 @@ static void cpufreq_interactive_timer(unsigned long data)
 					continue;
 
 				max_load = max(max_load, picpu->prev_load);
-				max_freq = max(max_freq, picpu->policy->cur);
+				max_freq = max(max_freq, picpu->target_freq);
 			}
 
 			if (max_freq > up_threshold_any_cpu_freq &&
@@ -1265,39 +1263,14 @@ static void interactive_input_event(struct input_handle *handle,
 		boostpulse_endtime = ktime_to_us(ktime_get()) +
 			boostpulse_duration_val;
 		cpufreq_interactive_boost();
-		if (DEBUG)
-			printk(KERN_INFO "intelliactive: cpufreq input boosted\n");
 	}
 }
-
-static int input_dev_filter(const char *input_dev_name)
-{
-	if (DEBUG)
-		printk(KERN_INFO "intelliactive: input dev name=%s\n", input_dev_name);
-	if (strstr(input_dev_name, "touchscreen") ||
-	    strstr(input_dev_name, "atmel-touchscreen") ||
-	    strstr(input_dev_name, "synaptics-rmi-touchscreen") ||
-	    strstr(input_dev_name, "touch_dev") ||
-	    strstr(input_dev_name, "sec-touchscreen") ||
-	    strstr(input_dev_name, "keypad")) {
-		return 0;
-	} else {
-		return 1;
-	}
-}
-
 
 static int interactive_input_connect(struct input_handler *handler,
 		struct input_dev *dev, const struct input_device_id *id)
 {
 	struct input_handle *handle;
 	int error;
-
-	if (input_dev_filter(dev->name)) {
-		if (DEBUG)
-			printk(KERN_INFO "intelliactive: no match for input device (%s)\n", dev->name);
-		return -ENODEV;
-	}
 
 	handle = kzalloc(sizeof(struct input_handle), GFP_KERNEL);
 	if (!handle)
@@ -1331,8 +1304,21 @@ static void interactive_input_disconnect(struct input_handle *handle)
 }
 
 static const struct input_device_id interactive_ids[] = {
-	{ .driver_info = 1 },
-	{ },
+	{
+		.flags = INPUT_DEVICE_ID_MATCH_EVBIT |
+			 INPUT_DEVICE_ID_MATCH_ABSBIT,
+		.evbit = { BIT_MASK(EV_ABS) },
+		.absbit = { [BIT_WORD(ABS_MT_POSITION_X)] =
+			    BIT_MASK(ABS_MT_POSITION_X) |
+			    BIT_MASK(ABS_MT_POSITION_Y) },
+	}, /* multi-touch touchscreen */
+	{
+		.flags = INPUT_DEVICE_ID_MATCH_KEYBIT |
+			 INPUT_DEVICE_ID_MATCH_ABSBIT,
+		.keybit = { [BIT_WORD(BTN_TOUCH)] = BIT_MASK(BTN_TOUCH) },
+		.absbit = { [BIT_WORD(ABS_X)] =
+			    BIT_MASK(ABS_X) | BIT_MASK(ABS_Y) },
+	}, /* touchpad */
 };
 
 static struct input_handler interactive_input_handler = {
@@ -1399,6 +1385,8 @@ static int cpufreq_governor_intelliactive(struct cpufreq_policy *policy,
 			pcpu->hispeed_validate_time =
 				pcpu->floor_validate_time;
 			down_write(&pcpu->enable_sem);
+			del_timer_sync(&pcpu->cpu_timer);
+			del_timer_sync(&pcpu->cpu_slack_timer);
 			cpufreq_interactive_timer_start(j);
 			pcpu->governor_enabled = 1;
 			up_write(&pcpu->enable_sem);
@@ -1432,18 +1420,18 @@ static int cpufreq_governor_intelliactive(struct cpufreq_policy *policy,
 			pcpu = &per_cpu(cpuinfo, j);
 			down_write(&pcpu->enable_sem);
 			pcpu->governor_enabled = 0;
+			pcpu->target_freq = 0;
 			del_timer_sync(&pcpu->cpu_timer);
 			del_timer_sync(&pcpu->cpu_slack_timer);
 			up_write(&pcpu->enable_sem);
 		}
 
 		if (--active_count > 0) {
+			if (!policy->cpu)
+				input_unregister_handler(&interactive_input_handler);
 			mutex_unlock(&gov_lock);
 			return 0;
 		}
-
-		if (!policy->cpu)
-			input_unregister_handler(&interactive_input_handler);
 
 		cpufreq_unregister_notifier(
 			&cpufreq_notifier_block, CPUFREQ_TRANSITION_NOTIFIER);
