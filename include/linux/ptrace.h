@@ -55,8 +55,9 @@
 #define PTRACE_O_TRACEEXEC	0x00000010
 #define PTRACE_O_TRACEVFORKDONE	0x00000020
 #define PTRACE_O_TRACEEXIT	0x00000040
+#define PTRACE_O_TRACESECCOMP	0x00000080
 
-#define PTRACE_O_MASK		0x0000007f
+#define PTRACE_O_MASK		0x000000ff
 
 /* Wait extended result codes for the above trace options.  */
 #define PTRACE_EVENT_FORK	1
@@ -65,6 +66,7 @@
 #define PTRACE_EVENT_EXEC	4
 #define PTRACE_EVENT_VFORK_DONE	5
 #define PTRACE_EVENT_EXIT	6
+#define PTRACE_EVENT_SECCOMP	7
 
 #include <asm/ptrace.h>
 
@@ -81,12 +83,18 @@
 #define PT_DTRACE	0x00000002	/* delayed trace (used on m68k, i386) */
 #define PT_TRACESYSGOOD	0x00000004
 #define PT_PTRACE_CAP	0x00000008	/* ptracer can follow suid-exec */
-#define PT_TRACE_FORK	0x00000010
-#define PT_TRACE_VFORK	0x00000020
-#define PT_TRACE_CLONE	0x00000040
-#define PT_TRACE_EXEC	0x00000080
-#define PT_TRACE_VFORK_DONE	0x00000100
-#define PT_TRACE_EXIT	0x00000200
+
+/* PT_TRACE_* event enable flags */
+#define PT_EVENT_FLAG_SHIFT	4
+#define PT_EVENT_FLAG(event)	(1 << (PT_EVENT_FLAG_SHIFT + (event) - 1))
+
+#define PT_TRACE_FORK		PT_EVENT_FLAG(PTRACE_EVENT_FORK)
+#define PT_TRACE_VFORK		PT_EVENT_FLAG(PTRACE_EVENT_VFORK)
+#define PT_TRACE_CLONE		PT_EVENT_FLAG(PTRACE_EVENT_CLONE)
+#define PT_TRACE_EXEC		PT_EVENT_FLAG(PTRACE_EVENT_EXEC)
+#define PT_TRACE_VFORK_DONE	PT_EVENT_FLAG(PTRACE_EVENT_VFORK_DONE)
+#define PT_TRACE_EXIT		PT_EVENT_FLAG(PTRACE_EVENT_EXIT)
+#define PT_TRACE_SECCOMP	PT_EVENT_FLAG(PTRACE_EVENT_SECCOMP)
 
 #define PT_TRACE_MASK	0x000003f4
 
@@ -138,36 +146,38 @@ int generic_ptrace_pokedata(struct task_struct *tsk, unsigned long addr,
 			    unsigned long data);
 
 /**
- * task_ptrace - return %PT_* flags that apply to a task
- * @task:	pointer to &task_struct in question
+ * ptrace_event_enabled - test whether a ptrace event is enabled
+ * @task: ptracee of interest
+ * @event: %PTRACE_EVENT_* to test
  *
- * Returns the %PT_* flags that apply to @task.
+ * Test whether @event is enabled for ptracee @task.
+ *
+ * Returns %true if @event is enabled, %false otherwise.
  */
-static inline int task_ptrace(struct task_struct *task)
+static inline bool ptrace_event_enabled(struct task_struct *task, int event)
 {
-	return task->ptrace;
+	return task->ptrace & PT_EVENT_FLAG(event);
 }
 
 /**
  * ptrace_event - possibly stop for a ptrace event notification
- * @mask:	%PT_* bit to check in @current->ptrace
- * @event:	%PTRACE_EVENT_* value to report if @mask is set
+ * @event:	%PTRACE_EVENT_* value to report
  * @message:	value for %PTRACE_GETEVENTMSG to return
  *
- * This checks the @mask bit to see if ptrace wants stops for this event.
- * If so we stop, reporting @event and @message to the ptrace parent.
- *
- * Returns nonzero if we did a ptrace notification, zero if not.
+ * Check whether @event is enabled and, if so, report @event and @message
+ * to the ptrace parent.
  *
  * Called without locks.
  */
-static inline int ptrace_event(int mask, int event, unsigned long message)
+static inline void ptrace_event(int event, unsigned long message)
 {
-	if (mask && likely(!(current->ptrace & mask)))
-		return 0;
-	current->ptrace_message = message;
-	ptrace_notify((event << 8) | SIGTRAP);
-	return 1;
+	if (unlikely(ptrace_event_enabled(current, event))) {
+		current->ptrace_message = message;
+		ptrace_notify((event << 8) | SIGTRAP);
+	} else if (event == PTRACE_EVENT_EXEC && unlikely(current->ptrace)) {
+		/* legacy EXEC report via SIGTRAP */
+		send_sig(SIGTRAP, current, 0);
+	}
 }
 
 /**
