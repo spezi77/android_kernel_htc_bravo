@@ -53,6 +53,7 @@ extern struct platform_device msm_device_mddi0;
 #define MSM_RAM_CONSOLE_BASE	0x00500000
 #define MSM_RAM_CONSOLE_SIZE	0x00100000
 
+#ifdef CONFIG_ANDROID_PMEM
 #define MSM_PMEM_ADSP_BASE	0x2C200000
 #define MSM_PMEM_ADSP_SIZE	0x01E00000 /* for 8M(4:3) + gpu effect */
 
@@ -60,6 +61,7 @@ extern struct platform_device msm_device_mddi0;
 #define MSM_PMEM_SF_SIZE	0x02000000
 
 #define PMEM_KERNEL_EBI0_SIZE   0x00500000
+#endif
 
 /*
  * Reserve space for double buffered full screen
@@ -81,10 +83,10 @@ extern struct platform_device msm_device_mddi0;
 #define MSM_FB_SIZE roundup(MSM_FB_PRIM_BUF_SIZE, 4096)
 
 #ifdef CONFIG_ION_MSM
-#define MSM_ION_CAMERA_SIZE	MSM_PMEM_ADSP_SIZE
-#define MSM_ION_SF_BASE		MSM_PMEM_SF_BASE
-#define MSM_ION_SF_SIZE		MSM_PMEM_SF_SIZE
-#define MSM_ION_HEAP_NUM	3
+#define MSM_ION_MM_SIZE		0x3000000
+#define MSM_ION_AUDIO_SIZE	0x200000
+#define MSM_ION_SF_SIZE		0x1C00000
+#define MSM_ION_HEAP_NUM	4
 #endif
 
 /* GPIO definition */

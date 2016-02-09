@@ -1740,6 +1740,7 @@ static struct msm_otg_platform_data msm_otg_pdata = {
 	.se1_gating		= SE1_GATING_DISABLE,
 };
 
+#if 0
 static struct android_pmem_platform_data android_pmem_pdata = {
 	.name = "pmem",
 	.allocator_type = PMEM_ALLOCATORTYPE_ALLORNOTHING,
@@ -1752,6 +1753,7 @@ static struct platform_device android_pmem_device = {
 	.id = 0,
 	.dev = { .platform_data = &android_pmem_pdata },
 };
+#endif
 
 #ifdef CONFIG_MSM_V4L2_VIDEO_OVERLAY_DEVICE
 
@@ -1768,12 +1770,18 @@ static struct platform_device msm_migrate_pages_device = {
 	.id     = -1,
 };
 
+#ifdef CONFIG_ANDROID_PMEM
 static struct android_pmem_platform_data android_pmem_adsp_pdata = {
        .name = "pmem_adsp",
+#ifndef CONFIG_ANDROID_PMEM_ION_WRAPPER
        .allocator_type = PMEM_ALLOCATORTYPE_BITMAP,
        .cached = 1,
-	.memory_type = MEMTYPE_EBI0,
+	   .memory_type = MEMTYPE_EBI0,
+#else
+	   .ion_heap_id = ION_CP_MM_HEAP_ID,
+#endif
 };
+#endif
 
 static struct platform_device android_pmem_adsp_device = {
 	.name = "android_pmem",
@@ -3027,7 +3035,7 @@ static struct platform_device *devices[] __initdata = {
         &msm_device_ssbi6,
         &msm_device_ssbi7,
 #endif
-        &android_pmem_device,
+        /*&android_pmem_device,*/
         &msm_fb_device,
 #ifdef CONFIG_MSM_V4L2_VIDEO_OVERLAY_DEVICE
 	&msm_v4l2_video_overlay_device,
@@ -3036,7 +3044,9 @@ static struct platform_device *devices[] __initdata = {
 #ifdef CONFIG_MSM_ROTATOR
         &msm_rotator_device,
 #endif
+#ifdef CONFIG_ANDROID_PMEM
         &android_pmem_adsp_device,
+#endif
         /*&android_pmem_audio_device,*/
         &msm_device_i2c,
         &msm_device_i2c_2,
@@ -3292,15 +3302,23 @@ struct ion_platform_heap msm7x30_heaps[] = {
 			.name	= ION_VMALLOC_HEAP_NAME,
 		},
 #ifdef CONFIG_MSM_MULTIMEDIA_USE_ION
-		/* CAMERA */
+		/* MM */
 		{
-			.id		= ION_CAMERA_HEAP_ID,
+			.id		= ION_CP_MM_HEAP_ID,
 			.type	= ION_HEAP_TYPE_CARVEOUT,
-			.name	= ION_CAMERA_HEAP_NAME,
+			.name	= ION_MM_HEAP_NAME,
 			.memory_type = ION_EBI_TYPE,
 			.extra_data = (void *)&co_ion_pdata,
 		},
-		/* PMEM_MDP =SF */
+		/* AUDIO */
+		{
+			.id		= ION_AUDIO_HEAP_ID,
+			.type	= ION_HEAP_TYPE_CARVEOUT,
+			.name	= ION_AUDIO_HEAP_NAME,
+			.memory_type = ION_EBI_TYPE,
+			.extra_data = (void *)&co_ion_pdata,
+		},
+		/* SF */
 		{
 			.id		= ION_SF_HEAP_ID,
 			.type	= ION_HEAP_TYPE_CARVEOUT,
@@ -3309,7 +3327,6 @@ struct ion_platform_heap msm7x30_heaps[] = {
 			.extra_data = (void *)&co_ion_pdata,
 		},
 #endif
-		
 };
 
 static struct ion_platform_data ion_pdata = {
@@ -3343,6 +3360,7 @@ static void fix_sizes(void)
 #endif
 }
 
+#ifndef CONFIG_ANDROID_PMEM_ION_WRAPPER
 static void __init size_pmem_device(struct android_pmem_platform_data *pdata, unsigned long start, unsigned long size)
 {
 	pdata->start = start;
@@ -3350,13 +3368,16 @@ static void __init size_pmem_device(struct android_pmem_platform_data *pdata, un
 	pr_info("%s: allocating %lu bytes at 0x%p (0x%lx physical) for %s\n",
 		__func__, size, __va(start), start, pdata->name);
 }
+#endif
 
 static void __init size_pmem_devices(void)
 {
 #ifdef CONFIG_ANDROID_PMEM
+#ifndef CONFIG_ANDROID_PMEM_ION_WRAPPER
 	size_pmem_device(&android_pmem_adsp_pdata, MSM_PMEM_ADSP_BASE, pmem_adsp_size);
 #ifndef CONFIG_MSM_MULTIMEDIA_USE_ION
 	android_pmem_pdata.size = pmem_sf_size;
+#endif
 #endif
 #endif
 }
@@ -3376,10 +3397,11 @@ static void __init reserve_memory_for(struct android_pmem_platform_data *p)
 static void __init reserve_pmem_memory(void)
 {
 #ifdef CONFIG_ANDROID_PMEM
+#ifndef CONFIG_ANDROID_PMEM_ION_WRAPPER
 	msm7x30_reserve_table[MEMTYPE_EBI0].size += PMEM_KERNEL_EBI0_SIZE;
 #ifndef CONFIG_MSM_MULTIMEDIA_USE_ION
 	reserve_memory_for(&android_pmem_pdata);
-	
+#endif
 #endif
 #endif
 }
@@ -3387,13 +3409,20 @@ static void __init reserve_pmem_memory(void)
 static void __init size_ion_devices(void)
 {
 #ifdef CONFIG_MSM_MULTIMEDIA_USE_ION
-	ion_pdata.heaps[1].base = MSM_PMEM_ADSP_BASE;
-	ion_pdata.heaps[1].size = MSM_ION_CAMERA_SIZE;
-	ion_pdata.heaps[2].base = MSM_ION_SF_BASE;
-	ion_pdata.heaps[2].size = MSM_ION_SF_SIZE;
+	ion_pdata.heaps[1].size = MSM_ION_MM_SIZE;
+	ion_pdata.heaps[2].size = MSM_ION_AUDIO_SIZE;
+	ion_pdata.heaps[3].size = MSM_ION_SF_SIZE;
 #endif
 }
 
+static void __init reserve_ion_memory(void)
+{
+#ifdef CONFIG_MSM_MULTIMEDIA_USE_ION
+	msm7x30_reserve_table[MEMTYPE_EBI0].size += MSM_ION_MM_SIZE;
+	msm7x30_reserve_table[MEMTYPE_EBI0].size += MSM_ION_AUDIO_SIZE;
+	msm7x30_reserve_table[MEMTYPE_EBI0].size += MSM_ION_SF_SIZE;
+#endif
+}
 
 static void __init msm7x30_calculate_reserve_sizes(void)
 {
@@ -3401,6 +3430,7 @@ static void __init msm7x30_calculate_reserve_sizes(void)
 	size_pmem_devices();
 	reserve_pmem_memory();
 	size_ion_devices();
+	reserve_ion_memory();
 }
 
 static int msm7x30_paddr_to_memtype(unsigned int paddr)
@@ -3437,6 +3467,7 @@ static void __init spade_allocate_memory_regions(void)
 			size, addr, __pa(addr));
 
 #ifdef CONFIG_MSM_V4L2_VIDEO_OVERLAY_DEVICE
+#if 0
 	size = MSM_V4L2_VIDEO_OVERLAY_BUF_SIZE;
 	addr = alloc_bootmem_align(size, 0x1000);
 	msm_v4l2_video_overlay_resources[0].start = __pa(addr);
@@ -3444,6 +3475,7 @@ static void __init spade_allocate_memory_regions(void)
 		msm_v4l2_video_overlay_resources[0].start + size - 1;
 	pr_debug("allocating %lu bytes at %p (%lx physical) for v4l2\n",
 		size, addr, __pa(addr));
+#endif
 #endif
 }
 
