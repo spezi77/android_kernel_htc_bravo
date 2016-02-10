@@ -53,22 +53,6 @@ extern struct platform_device msm_device_mddi0;
 #define MSM_RAM_CONSOLE_BASE	0x00500000
 #define MSM_RAM_CONSOLE_SIZE	0x00100000
 
-#ifdef CONFIG_ANDROID_PMEM
-#define MSM_PMEM_ADSP_BASE	0x2C200000
-#define MSM_PMEM_ADSP_SIZE	0x01E00000 /* for 8M(4:3) + gpu effect */
-
-#define MSM_PMEM_SF_BASE	0x2E000000
-#define MSM_PMEM_SF_SIZE	0x02000000
-
-#define PMEM_KERNEL_EBI0_SIZE   0x00500000
-#endif
-
-/*
- * Reserve space for double buffered full screen
- * res V4L2 video overlay - i.e. 1280x720x1.5x2
-*/
-#define MSM_V4L2_VIDEO_OVERLAY_BUF_SIZE 2764800
-
 #ifdef CONFIG_FB_MSM_TRIPLE_BUFFER
 #define MSM_FB_PRIM_BUF_SIZE \
 				(roundup((roundup(800, 32) * roundup(480, 32) * 4), 4096) * 3)
