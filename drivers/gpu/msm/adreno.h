@@ -205,4 +205,4 @@ static inline int adreno_encode_istore_size(struct adreno_device *adreno_dev)
 	return (ilog2(size) - 5) << 29;
 }
 
-endif /*__ADRENO_H */
+#endif /*__ADRENO_H */
