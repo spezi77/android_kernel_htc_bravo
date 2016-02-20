@@ -359,7 +359,7 @@ static void msm_gpio_irq_handler(unsigned int irq, struct irq_desc *desc)
 					   msm_chip->chip.base + j);
 		}
 	}
-
+	desc->irq_data.chip->irq_ack(&desc->irq_data); /* Could possibly be removed? */
 	chained_irq_exit(chip, desc);
 }
 
@@ -656,8 +656,7 @@ void config_gpio_table(uint32_t *table, int len)
 	unsigned id;
 	for (n = 0; n < len; n++) {
 		id = table[n];
-		if (msm_proc_comm(PCOM_RPC_GPIO_TLMM_CONFIG_EX, &id, 0))
-			printk(KERN_ERR "%s: config gpio fail\n", __func__);
+		msm_proc_comm(PCOM_RPC_GPIO_TLMM_CONFIG_EX, &id, 0);
 	}
 }
 EXPORT_SYMBOL(config_gpio_table);
