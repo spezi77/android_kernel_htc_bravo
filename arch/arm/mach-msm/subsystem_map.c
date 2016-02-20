@@ -34,17 +34,6 @@ static struct rb_root buffer_root;
 static struct rb_root phys_root;
 DEFINE_MUTEX(msm_buffer_mutex);
 
-static unsigned long subsystem_to_domain_tbl[] = {
-	VIDEO_DOMAIN,
-	VIDEO_DOMAIN,
-	CAMERA_DOMAIN,
-	DISPLAY_READ_DOMAIN,
-	DISPLAY_WRITE_DOMAIN,
-	ROTATOR_SRC_DOMAIN,
-	ROTATOR_DST_DOMAIN,
-	0xFFFFFFFF
-};
-
 static struct msm_buffer_node *find_buffer(void *key)
 {
 	struct rb_root *root = &buffer_root;
@@ -217,31 +206,6 @@ static int remove_buffer_phys(struct msm_buffer_node *victim_node)
 	rb_erase(&victim_node->rb_node_paddr, root);
 	mutex_unlock(&msm_buffer_mutex);
 	return 0;
-}
-
-static unsigned long msm_subsystem_get_domain_no(int subsys_id)
-{
-	if (subsys_id > INVALID_SUBSYS_ID && subsys_id <= MAX_SUBSYSTEM_ID &&
-	    subsys_id < ARRAY_SIZE(subsystem_to_domain_tbl))
-		return subsystem_to_domain_tbl[subsys_id];
-	else
-		return subsystem_to_domain_tbl[MAX_SUBSYSTEM_ID];
-}
-
-static unsigned long msm_subsystem_get_partition_no(int subsys_id)
-{
-	switch (subsys_id) {
-	case MSM_SUBSYSTEM_VIDEO_FWARE:
-		return VIDEO_FIRMWARE_POOL;
-	case MSM_SUBSYSTEM_VIDEO:
-		return VIDEO_MAIN_POOL;
-	case MSM_SUBSYSTEM_CAMERA:
-	case MSM_SUBSYSTEM_DISPLAY:
-	case MSM_SUBSYSTEM_ROTATOR:
-		return GEN_POOL;
-	default:
-		return 0xFFFFFFFF;
-	}
 }
 
 phys_addr_t msm_subsystem_check_iova_mapping(int subsys_id, unsigned long iova)
