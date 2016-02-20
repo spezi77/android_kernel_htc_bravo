@@ -489,7 +489,7 @@ struct platform_device msm_device_dmov = {
 };
 
 #define MSM_SDC1_BASE         0xA0300000
-#define MSM_SDC2_BASE         0xA0400000
+#define MSM_SDC2_BASE_PHYS    0xA0400000
 #define MSM_SDC3_BASE         0xA0500000
 #define MSM_SDC4_BASE         0xA0600000
 static struct resource resources_sdc1[] = {
@@ -519,8 +519,8 @@ static struct resource resources_sdc1[] = {
 
 static struct resource resources_sdc2[] = {
 	{
-		.start	= MSM_SDC2_BASE,
-		.end	= MSM_SDC2_BASE + SZ_4K - 1,
+		.start	= MSM_SDC2_BASE_PHYS,
+		.end	= MSM_SDC2_BASE_PHYS + SZ_4K - 1,
 		.flags	= IORESOURCE_MEM,
 	},
 	{
@@ -766,6 +766,44 @@ static struct platform_device msm_tvenc_device = {
 	.resource       = msm_tvenc_resources,
 };
 
+#if defined(CONFIG_MSM_SOC_REV_A)
+#define MSM_QUP_PHYS           0xA1680000
+#define MSM_GSBI_QUP_I2C_PHYS  0xA1600000
+#define INT_PWB_QUP_ERR        INT_GSBI_QUP
+#else
+#define MSM_QUP_PHYS           0xA9900000
+#define MSM_GSBI_QUP_I2C_PHYS  0xA9900000
+#define INT_PWB_QUP_ERR        INT_PWB_I2C
+#endif
+#define MSM_QUP_SIZE           SZ_4K
+static struct resource resources_qup[] = {
+	{
+		.name   = "qup_phys_addr",
+		.start	= MSM_QUP_PHYS,
+		.end	= MSM_QUP_PHYS + MSM_QUP_SIZE - 1,
+		.flags	= IORESOURCE_MEM,
+	},
+	{
+		.name   = "gsbi_qup_i2c_addr",
+		.start	= MSM_GSBI_QUP_I2C_PHYS,
+		.end	= MSM_GSBI_QUP_I2C_PHYS + 4 - 1,
+		.flags	= IORESOURCE_MEM,
+	},
+	{
+		.name   = "qup_err_intr",
+		.start	= INT_PWB_QUP_ERR,
+		.end	= INT_PWB_QUP_ERR,
+		.flags	= IORESOURCE_IRQ,
+	},
+};
+
+struct platform_device qup_device_i2c = {
+	.name		= "qup_i2c",
+	.id		= 4,
+	.num_resources	= ARRAY_SIZE(resources_qup),
+	.resource	= resources_qup,
+};
+
 /* TSIF begin */
 #if defined(CONFIG_TSIF) || defined(CONFIG_TSIF_MODULE)
 
@@ -881,9 +919,16 @@ void __init msm_camera_register_device(void *res, uint32_t num,
 	msm_register_device(&msm_camera_device, data);
 }
 
+#if defined(CONFIG_ARCH_MSM7X30)
+#define GPIO_I2C_CLK 70
+#define GPIO_I2C_DAT 71
+#elif defined(CONFIG_ARCH_QSD8X50)
 #define GPIO_I2C_CLK 95
 #define GPIO_I2C_DAT 96
-
+#else
+#define GPIO_I2C_CLK 60
+#define GPIO_I2C_DAT 61
+#endif
 
 void msm_i2c_gpio_init(void)
 {
