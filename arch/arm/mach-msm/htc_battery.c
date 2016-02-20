@@ -50,10 +50,6 @@
 #include <linux/ds2746_battery.h>
 #endif
 
-#ifdef CONFIG_FORCE_FAST_CHARGE
-#include <linux/fastchg.h>
-#endif
-
 #include <linux/android_alarm.h>
 
 static struct wake_lock vbus_wake_lock;
@@ -134,6 +130,7 @@ struct htc_battery_info {
 	int gpio_adp_9v;
 	unsigned int option_flag;
 	int (*func_battery_charging_ctrl)(enum batt_ctl_t ctl);
+	int charger_re_enable;
 };
 
 static struct msm_rpc_endpoint *endpoint;
@@ -164,6 +161,7 @@ static enum power_supply_property htc_battery_properties[] = {
 	POWER_SUPPLY_PROP_PRESENT,
 	POWER_SUPPLY_PROP_TECHNOLOGY,
 	POWER_SUPPLY_PROP_CAPACITY,
+	POWER_SUPPLY_PROP_OVERLOAD,
 };
 
 static enum power_supply_property htc_power_properties[] = {
@@ -482,19 +480,9 @@ int battery_charging_ctrl(enum batt_ctl_t ctl)
 		result = gpio_direction_output(htc_batt_info.gpio_mchg_en_n, 1);
 		break;
 	case ENABLE_SLOW_CHG:
-#ifdef CONFIG_FORCE_FAST_CHARGE
-		if (force_fast_charge == 1) {
-			BATT_LOG("charger ON (FORCE_FAST_CHARGE)");
-			result = gpio_direction_output(htc_batt_info.gpio_iset, 1);
-			result = gpio_direction_output(htc_batt_info.gpio_mchg_en_n, 0);
-		} else {
-#endif
-			BATT_LOG("charger ON (SLOW)");
-			result = gpio_direction_output(htc_batt_info.gpio_iset, 0);
-			result = gpio_direction_output(htc_batt_info.gpio_mchg_en_n, 0);
-#ifdef CONFIG_FORCE_FAST_CHARGE
-		}
-#endif
+		BATT_LOG("charger ON (SLOW)");
+		result = gpio_direction_output(htc_batt_info.gpio_iset, 0);
+		result = gpio_direction_output(htc_batt_info.gpio_mchg_en_n, 0);
 		if (htc_batt_info.gpio_adp_9v > 0)
 			result = gpio_direction_output(htc_batt_info.gpio_adp_9v, 0);
 		break;
@@ -692,14 +680,8 @@ static int htc_cable_status_update(int status)
 	 * if receives AC notification */
 	last_source = htc_batt_info.rep.charging_source;
 	if (status == CHARGER_USB && g_usb_online == 0) {
-#ifdef CONFIG_FORCE_FAST_CHARGE
-		BATT_LOG("cable USB forced fast charge");
-		htc_set_smem_cable_type(CHARGER_AC);
-		htc_batt_info.rep.charging_source = CHARGER_AC;
-#else
 		htc_set_smem_cable_type(CHARGER_USB);
 		htc_batt_info.rep.charging_source = CHARGER_USB;
-#endif
 	} else {
 		htc_set_smem_cable_type(status);
 		htc_batt_info.rep.charging_source  = status;
@@ -1015,6 +997,7 @@ static int htc_get_batt_info_smem(struct battery_info_reply *buffer)
 	buffer->charging_enabled = smem_batt_info->charging_enabled;
 	buffer->full_bat = smem_batt_info->full_bat;
 	buffer->over_vchg = smem_batt_info->over_vchg;
+	htc_batt_info.rep.overloading_charge = smem_batt_info->overloading_charge;
 	mutex_unlock(&htc_batt_info.lock);
 
 	if (htc_batt_debug_mask & HTC_BATT_DEBUG_SMEM)
@@ -1428,22 +1411,10 @@ static int htc_rpc_charger_switch(unsigned enable)
 	} req;
 
 	BATT_LOG("%s: switch charger to mode: %u", __func__, enable);
-	if (enable == ENABLE_LIMIT_CHARGER) {
-		#if (!defined(CONFIG_MACH_PRIMOU))
-			ret = tps_set_charger_ctrl(ENABLE_LIMITED_CHG);
-		#else
-			phone_call_flag = PHONE_CALL_IN;
-			BATT_LOG("phone_call_flag:%d\n",phone_call_flag);
-		#endif
-	}
-	else if (enable == DISABLE_LIMIT_CHARGER) {
-		#if (!defined(CONFIG_MACH_PRIMOU))
-			ret = tps_set_charger_ctrl(CLEAR_LIMITED_CHG);
-		#else
-			phone_call_flag = PHONE_CALL_STOP;
-			BATT_LOG("phone_call_flag:%d\n",phone_call_flag);
-		#endif
-	}
+	if (enable == ENABLE_LIMIT_CHARGER)
+	    ret = tps_set_charger_ctrl(ENABLE_LIMITED_CHG);
+	else if (enable == DISABLE_LIMIT_CHARGER)
+	    ret = tps_set_charger_ctrl(CLEAR_LIMITED_CHG);
 	else {
 		if (htc_batt_info.guage_driver == GUAGE_MODEM) {
 			/* For Mecha, this should be enabled. */
@@ -1455,11 +1426,9 @@ static int htc_rpc_charger_switch(unsigned enable)
 			if (ret < 0)
 				BATT_ERR("%s: msm_rpc_call failed (%d)!", __func__, ret);
 		}
-#if 0
 #if defined(CONFIG_BATTERY_DS2746)
 		if (htc_batt_info.guage_driver == GUAGE_DS2746)
 			ds2746_charger_switch(enable);
-#endif
 #endif
 		power_supply_changed(&htc_power_supplies[CHARGER_BATTERY]);
 	}
@@ -1879,7 +1848,7 @@ int htc_battery_core_update(enum power_supplies_type supply)
 static int htc_battery_core_probe(struct platform_device *pdev)
 {
 	int i, rc;
-
+	pr_info("%s\n", __func__);
 	/* init battery gpio */
 	if (htc_batt_info.charger == LINEAR_CHARGER) {
 		if ((rc = init_batt_gpio()) < 0) {
@@ -1982,6 +1951,7 @@ struct rpc_dem_battery_update_args {
 static int handle_battery_call(struct msm_rpc_server *server,
 			       struct rpc_request_hdr *req, unsigned len)
 {
+	pr_info("%s\n", __func__);
 	switch (req->procedure) {
 	case RPC_BATT_MTOA_NULL:
 		return 0;
@@ -2126,7 +2096,7 @@ static struct notifier_block ds2746_notifier = {
 
 #if defined(CONFIG_BATTERY_DS2746)
 /* this function is called by ds2746_battery.c to update batt_info */
-int htc_battery_update_change(void)
+int htc_battery_update_change(int force_update)
 {
 	struct battery_info_reply new_batt_info_rep;
 	int is_send_batt_uevent = 0, is_send_acusb_uevent = 0;
@@ -2146,8 +2116,10 @@ int htc_battery_update_change(void)
 	mutex_lock(&htc_batt_info.lock);
 	if (htc_batt_info.rep.charging_enabled != new_batt_info_rep.charging_enabled) {
 		htc_batt_info.rep.charging_enabled = new_batt_info_rep.charging_enabled;
-		if(new_batt_info_rep.charging_enabled > 0)is_send_acusb_uevent = 1;
-		else is_send_batt_uevent = 1;
+		if(new_batt_info_rep.charging_enabled > 0)
+		      is_send_acusb_uevent = 1;
+		else
+		      is_send_batt_uevent = 1;
 	}
 	if ((htc_batt_info.rep.level != new_batt_info_rep.level) ||
 		(htc_batt_info.rep.batt_temp != new_batt_info_rep.batt_temp)) {
@@ -2206,6 +2178,7 @@ static int htc_battery_probe(struct platform_device *pdev)
 	htc_batt_info.charger = pdata->charger;
 	htc_batt_info.option_flag = pdata->option_flag;
 	htc_batt_info.rep.full_level = 100;
+	htc_batt_info.charger_re_enable = pdata->charger_re_enable;
 
 	if (htc_batt_info.charger == LINEAR_CHARGER) {
 		htc_batt_info.gpio_mbat_in = pdata->gpio_mbat_in;

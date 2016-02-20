@@ -65,6 +65,7 @@ struct battery_info_reply {
 	u32 over_vchg;		/* 0:normal, 1:over voltage charger */
 	s32 eval_current;	/* System loading current from ADC */
 	u32 temp_fault;		/* Battery temperature fault */
+	u32 overloading_charge; /*Charging but Overloading*/
 };
 
 struct htc_battery_platform_data {
@@ -105,7 +106,8 @@ extern int get_cable_status(void);
 extern unsigned int batt_get_status(enum power_supply_property psp);
 
 #ifdef CONFIG_BATTERY_DS2746
-int htc_battery_update_change(void);
+int htc_battery_update_change(int force_update);
+extern int get_cable_type(void); // for cable_status_handler_func wrong issue, henc update from share memory
 #endif
 
 #endif

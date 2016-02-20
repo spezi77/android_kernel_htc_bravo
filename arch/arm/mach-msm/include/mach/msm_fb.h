@@ -18,13 +18,9 @@
 #define _MSM_FB_H_
 
 #include <linux/device.h>
-<<<<<<< HEAD
-#include <linux/msm_mdp.h>
-=======
 #include <linux/wakelock.h>
 #include <linux/hrtimer.h>
 #include <linux/earlysuspend.h>
->>>>>>> c43567d... Fast Forward: Add and Make changes for qsd8k devices
 
 struct mddi_info;
 
@@ -127,8 +123,6 @@ struct msm_panel_data {
 	} update_info;
 };
 
-<<<<<<< HEAD
-=======
 enum {
 	MDP_DMA_P = 0,
 	MDP_DMA_S,
@@ -145,7 +139,6 @@ struct msm_mdp_platform_data {
 	unsigned sync_start_pos;
 };
 
->>>>>>> c43567d... Fast Forward: Add and Make changes for qsd8k devices
 struct msm_mddi_client_data {
 	void (*suspend)(struct msm_mddi_client_data *);
 	void (*resume)(struct msm_mddi_client_data *);
@@ -256,7 +249,6 @@ struct mdp_device {
 	uint32_t width;		/*panel width*/
 	uint32_t height;	/*panel height*/
 };
-
 struct msmfb_info {
 	struct fb_info *fb;
 	struct msm_panel_data *panel;
@@ -275,6 +267,10 @@ struct msmfb_info {
 		int ebottom; /* exclusive */
 	} update_info;
 	char *black;
+#ifdef CONFIG_HTC_ONMODE_CHARGING
+	struct early_suspend onchg_earlier_suspend;
+	struct early_suspend onchg_suspend;
+#endif
 	struct early_suspend earlier_suspend;
 	struct early_suspend early_suspend;
 	struct wake_lock idle_lock;
@@ -345,8 +341,6 @@ struct msm_mddi_bridge_platform_data {
 	u8 *pwm;
 };
 
-<<<<<<< HEAD
-=======
 /*
  * This is used to communicate event between msm_fb, mddi, mddi_client, 
  * and board.
@@ -375,36 +369,9 @@ struct msm_fb_info {
 	int xres;
 	int yres;
 };
->>>>>>> c43567d... Fast Forward: Add and Make changes for qsd8k devices
 
-struct mdp_v4l2_req;
-int msm_fb_v4l2_enable(struct mdp_overlay *req, bool enable, void **par);
-int msm_fb_v4l2_update(void *par,
-	unsigned long srcp0_addr, unsigned long srcp0_size,
-	unsigned long srcp1_addr, unsigned long srcp1_size,
-	unsigned long srcp2_addr, unsigned long srcp2_size);
+extern int msmfb_get_var(struct msm_fb_info *tmp);
+extern int msmfb_get_fb_area(void);
+#endif
 
-<<<<<<< HEAD
-/*
- * This is used to communicate event between msm_fb, mddi, mddi_client,
- * and board.
- * It's mainly used to reset the display system.
- * Also, it is used for battery power policy.
- *
- */
-#define NOTIFY_MDDI     0x00000000
-#define NOTIFY_POWER    0x00000001
-#define NOTIFY_MSM_FB   0x00000010
-
-extern int register_display_notifier(struct notifier_block *nb);
-extern int display_notifier_call_chain(unsigned long val, void *data);
-
-#define display_notifier(fn, pri) {                     \
-	static struct notifier_block fn##_nb =          \
-	{ .notifier_call = fn, .priority = pri };       \
-	register_display_notifier(&fn##_nb);		\
-}
-
-=======
->>>>>>> c43567d... Fast Forward: Add and Make changes for qsd8k devices
 #endif

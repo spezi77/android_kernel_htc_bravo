@@ -777,7 +777,6 @@ struct ion_flag_data {
 };
 
 #define ION_IOC_MAGIC           'I'
->>>>>>> 37b2fe0... Fast Forward: add HTC BRAVO files and update configs
 
 /**
  * DOC: ION_IOC_ALLOC - allocate memory
