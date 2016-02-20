@@ -9,7 +9,7 @@
 #include <linux/poll.h>
 #include <linux/cdev.h>
 #include <linux/platform_device.h>
-#include <linux/pm_qos.h>
+#include <linux/wakelock.h>
 #include "linux/types.h"
 
 #include <mach/board.h>
@@ -60,6 +60,7 @@ enum vfe_resp_msg {
 	VFE_MSG_OUTPUT_T,   /* thumbnail (snapshot mode )*/
 	VFE_MSG_OUTPUT_S,   /* main image (snapshot mode )*/
 	VFE_MSG_OUTPUT_V,   /* video   (continuous mode ) */
+#endif	
 	VFE_MSG_STATS_AEC,
 	VFE_MSG_STATS_AF,
 	VFE_MSG_STATS_AWB,
@@ -228,25 +229,7 @@ struct msm_sensor_ctrl {
 	int (*s_init)(struct msm_camera_sensor_info *);
 	int (*s_release)(void);
 	int (*s_config)(void __user *);
-	enum msm_camera_type s_camera_type;
-	uint32_t s_mount_angle;
-	enum msm_st_frame_packing s_video_packing;
-	enum msm_st_frame_packing s_snap_packing;
-};
-
-struct msm_actuator_ctrl {
-	int (*a_init_table)(void);
-	int (*a_power_down)(void);
-	int (*a_create_subdevice)(void *, void *);
-	int (*a_config)(void __user *);
-};
-
-struct msm_strobe_flash_ctrl {
-	int (*strobe_flash_init)
-		(struct msm_camera_sensor_strobe_flash_data *);
-	int (*strobe_flash_release)
-		(struct msm_camera_sensor_strobe_flash_data *, int32_t);
-	int (*strobe_flash_charge)(int32_t, int32_t, uint32_t);
+	int node;
 };
 
 /* this structure is used in kernel */
@@ -300,10 +283,8 @@ struct msm_sync {
 	struct msm_camera_sensor_info *sdata;
 	struct msm_camvfe_fn vfefn;
 	struct msm_sensor_ctrl sctrl;
-	struct msm_strobe_flash_ctrl sfctrl;
-	struct msm_actuator_ctrl actctrl;
-	struct pm_qos_request_list idle_pm_qos;
-
+	struct wake_lock wake_suspend_lock;
+	struct wake_lock wake_lock;
 	struct platform_device *pdev;
 	uint8_t opencnt;
 	void *cropinfo;
@@ -512,4 +493,5 @@ void *msm_isp_sync_alloc(int size, gfp_t gfp);
 
 void msm_isp_sync_free(void *ptr);
 
+#endif
 #endif
