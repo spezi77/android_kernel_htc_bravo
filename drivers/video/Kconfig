@@ -2410,6 +2410,7 @@ config FB_MSM_OVERLAY_LEGACY
 	default n if ARCH_MSM8X60
 	default n if ARCH_MSM7X30
 
+source "drivers/video/msm/Kconfig"
 
 source "drivers/video/omap/Kconfig"
 source "drivers/video/omap2/Kconfig"

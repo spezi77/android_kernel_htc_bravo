@@ -3911,3 +3911,4 @@ int msm_camera_drv_start(struct platform_device *dev,
 	return rc;
 }
 EXPORT_SYMBOL(msm_camera_drv_start);
+

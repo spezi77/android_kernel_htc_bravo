@@ -155,12 +155,12 @@ ENTRY(msm_pm_collapse_exit)
 	mov     r1, #'A'
 	str     r1, [r0, #0x00C]
 #endif
-#ifdef CONFIG_ARCH_MSM7X30
+
 	bl	__cpu_early_init
 
 .globl _cpu_early_init_complete
 _cpu_early_init_complete:
-#endif
+
 	ldr     r1, =saved_state_end
 	ldr     r2, =msm_pm_collapse_exit
 	adr     r3, msm_pm_collapse_exit

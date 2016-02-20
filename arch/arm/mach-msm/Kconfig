@@ -235,6 +235,16 @@ config MSM_REMOTE_SPINLOCK_SFPB
 config MSM_ADM3
 	bool
 
+config MSM_MDP31
+	bool
+	depends on ARCH_QSD8X50
+	default y
+
+config MSM_MDP40
+	bool
+	depends on ARCH_MSM7X30
+	default y
+
 config PERFLOCK
         depends on CPU_FREQ
         depends on ARCH_MSM8960 || ARCH_MSM8X60 || ARCH_QSD8X50 || ARCH_MSM7X30 || ARCH_MSM7X00A || ARCH_MSM7X27A || ARCH_MSM7X25
@@ -1207,7 +1217,7 @@ config BUILD_OMA_DM
 
 config QSD_SVS
 	bool "QSD Static Voltage Scaling"
-	depends on (MACH_QSD8X50_SURF || MACH_QSD8X50_FFA)
+	depends on ARCH_QSD8X50
 	default y
 	select TPS65023
 	help
@@ -1215,7 +1225,7 @@ config QSD_SVS
 
 config QSD_PMIC_DEFAULT_DCDC1
 	int "PMIC default output voltage"
-	depends on (MACH_QSD8X50_SURF || MACH_QSD8X50_FFA)
+	depends on ARCH_QSD8X50
 	default 1250
 	help
 	  This is the PMIC voltage at Linux kernel boot.
@@ -1633,7 +1643,7 @@ config MSM_AVS_HW
 config MSM_HW3D
 	tristate "MSM Hardware 3D Register Driver"
 	depends on ANDROID_PMEM
-	default y
+	default n
 	help
 	  Provides access to registers needed by the userspace OpenGL|ES
 	  library.
@@ -2250,6 +2260,7 @@ config MSM_RPC_VIBRATOR
 	  Enable the vibrator support on MSM over RPC. The vibrator
 	  is connected on the PMIC. Say Y if you want to enable this
 	  feature.
+
 config RPC_VER_60001
 	bool "rpc ver 60001"
 	depends on MSM_ONCRPCROUTER

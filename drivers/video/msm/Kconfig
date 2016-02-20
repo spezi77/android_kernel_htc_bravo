@@ -1,17 +1,17 @@
-
-source "drivers/video/msm/vidc/Kconfig"
-
 config FB_MSM
-	tristate "MSM Framebuffer support"
+	tristate "MSM Framebuffer"
 	depends on FB && ARCH_MSM
-	select FB_BACKLIGHT if FB_MSM_BACKLIGHT
-	select NEW_LEDS
-	select LEDS_CLASS
 	select FB_CFB_FILLRECT
 	select FB_CFB_COPYAREA
 	select FB_CFB_IMAGEBLIT
+	default y
 	---help---
 	  Support for MSM Framebuffer.
+
+config FB_MSM_LEGACY_MDP
+	bool "MSM Legacy MDP (qsd8k)"
+	depends on FB_MSM && (MSM_MDP31 || MSM_MDP22)
+	default y
 
 if FB_MSM
 
@@ -109,12 +109,14 @@ config FB_MSM_MDDI
 	bool
 	default n
 
-config FB_MSM_MIPI_DSI
-	bool
-	default n
+config FB_MSM_MDP_PPP
+	bool "MSM MDP PPP"
+	depends on FB_MSM_LEGACY_MDP
+	default y
 
 config FB_MSM_LCDC
-	bool
+	bool "Support for integrated LCD controller in MDP3/4"
+	depends on FB_MSM && (MSM_MDP31 || MSM_MDP40)
 	default n
 
 config FB_MSM_LVDS
@@ -961,64 +963,24 @@ config FB_MSM_TVOUT_PAL_N
 	---help---
 	  Support for PAL N region (Argentina PAL-N)
 
-config FB_MSM_TVOUT_NONE
-	bool "NONE"
-	---help---
-	  This will disable TV Out functionality.
-endchoice
+config FB_MSM_MDDI
+	bool "Support for MSM MDDI controllers"
+	depends on FB_MSM
+	default y
 
-config FB_MSM_TVOUT_SVIDEO
-	bool "TVOut on S-video"
-	depends on FB_MSM_TVOUT
+config FB_MSM_MDDI_EPSON
+	bool "Support for Epson MDDI panels"
+	depends on FB_MSM_MDDI
 	default n
-	---help---
-	  Selects whether the TVOut signal uses S-video.
-	  Choose n for composite output.
 
-choice
-	depends on  FB_MSM_MDP22
-	prompt "External MDDI"
-	default FB_MSM_EXTMDDI_SVGA
-
-config FB_MSM_EXTMDDI_SVGA
-	bool "External MDDI SVGA"
-	select FB_MSM_MDDI
-	select FB_MSM_EXTMDDI
-	---help---
-	  Support for MSM SVGA (800x600) external MDDI panel
-
-config FB_MSM_EXTMDDI_NONE
-	bool "NONE"
-	---help---
-	  This will disable External MDDI functionality.
-endchoice
-
-choice
-	prompt "Default framebuffer color depth"
-	depends on FB_MSM_MDP40 || FB_MSM_MDP31 || FB_MSM_MDP303
-	default FB_MSM_DEFAULT_DEPTH_RGBA8888
-
-config FB_MSM_DEFAULT_DEPTH_RGB565
-	bool "16 bits per pixel (RGB565)"
-
-config FB_MSM_DEFAULT_DEPTH_ARGB8888
-	bool "32 bits per pixel (ARGB8888)"
-
-config FB_MSM_DEFAULT_DEPTH_RGBA8888
-	bool "32 bits per pixel (RGBA8888)"
-
-endchoice
-
-config FB_MSM_EBI2_EPSON_S1D_QVGA_PANEL
-	bool "EBI2 Epson QVGA Panel"
-	select FB_MSM_EBI2
+config FB_MSM_MDDI_NOVTEC
+	bool "Support for Novtec MDDI panels"
+	depends on FB_MSM_MDDI
 	default n
-	---help---
-	  Support for EBI2 Epson QVGA (240x320) panel
 
-config FB_MSM_EBI2_PANEL_DETECT
-	bool "EBI2 Panel Detect"
-	select FB_MSM_EBI2_EPSON_S1D_QVGA_PANEL
+config MSM_HDMI
+	bool "Support for HDMI in QCT platform"
+	depends on MSM_MDP31
 	default n
 	---help---
 	  Support for EBI2 panel auto detect
@@ -1027,3 +989,11 @@ if FB_MSM_MDSS
 	source "drivers/video/msm/mdss/Kconfig"
 endif
 endif
+
+config FB_MSM_LOGO
+       bool "Use boot splashscreen"
+       depends on FB_MSM
+       default y
+       help
+        Use logo.rle splash screen at startup
+

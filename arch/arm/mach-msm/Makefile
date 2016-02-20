@@ -33,9 +33,7 @@ endif
 
 obj-$(CONFIG_MSM_VIC) += irq-vic.o
 
-ifdef CONFIG_ARCH_QSD8X50
-	obj-$(CONFIG_MSM_SOC_REV_NONE) += acpuclock-8x50.o
-endif
+obj-$(CONFIG_ARCH_QSD8X50) += arch-init-scorpion.o acpuclock-8x50.o
 
 obj-$(CONFIG_SMP) += headsmp.o platsmp.o
 

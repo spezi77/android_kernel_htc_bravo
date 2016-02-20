@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 GCC_VERSION      := $(shell $(CONFIG_SHELL) $(PWD)/scripts/gcc-version.sh $(CROSS_COMPILE)gcc)
 ifeq ($(GCC_VERSION),0404)
 CFLAGS_REMOVE_msm_vfe8x.o = -Wframe-larger-than=1024
@@ -113,6 +114,17 @@ obj-$(CONFIG_VB6801) += vb6801.o
 obj-$(CONFIG_IMX072) += imx072.o imx072_reg.o
 obj-$(CONFIG_WEBCAM_OV9726) += ov9726.o ov9726_reg.o
 obj-$(CONFIG_WEBCAM_OV7692) += ov7692.o
+=======
+obj-$(CONFIG_MT9T013) += mt9t013.o mt9t013_reg.o
+>>>>>>> c43567d... Fast Forward: Add and Make changes for qsd8k devices
 obj-$(CONFIG_MT9D112) += mt9d112.o mt9d112_reg.o
-
-obj-$(CONFIG_MT9D113) += mt9d113.o mt9d113_reg.o
+obj-$(CONFIG_OV9665) += ov9665.o ov9665_reg.o
+obj-$(CONFIG_MT9P012) += mt9p012_fox.o mt9p012_reg.o
+obj-$(CONFIG_MSM_CAMERA) += msm_camera.o
+obj-$(CONFIG_MSM_CAMERA_V4L2) += msm_v4l2.o
+obj-$(CONFIG_S5K3E2FX) += s5k3e2fx.o
+obj-$(CONFIG_S5K6AAFX) += s5k6aafx.o s5k6aafx_reg_mecha.o
+obj-$(CONFIG_ARCH_MSM_ARM11) += msm_vfe7x.o msm_io7x.o
+obj-$(CONFIG_ARCH_QSD8X50) += msm_vfe8x.o msm_vfe8x_proc.o msm_io8x.o
+obj-$(CONFIG_OV8810) += ov8810.o
+obj-$(CONFIG_S5K3H1GX) += s5k3h1gx.o s5k3h1gx_reg.o

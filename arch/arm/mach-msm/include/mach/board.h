@@ -280,7 +280,6 @@ struct msm_camera_sensor_info {
 	struct msm_camera_sensor_strobe_flash_data *strobe_flash_data;
 	char *eeprom_data;
 	struct msm_camera_gpio_conf *gpio_conf;
-	enum msm_camera_type camera_type;
 	struct msm_actuator_info *actuator_info;
 	int (*camera_power_on)(void);
 	int (*camera_power_off)(void);
@@ -298,6 +297,12 @@ struct msm_camera_sensor_info {
 	int zero_shutter_mode; /* for doing zero shutter lag on MIPI */
 	int sensor_lc_disable; /* for sensor lens correction support */
 	int(*camera_pm8058_power)(int); /* for express */
+	/*power*/
+	char *camera_analog_pwd;
+	char *camera_io_pwd;
+	char *camera_vcm_pwd;
+	char *camera_digital_pwd;
+	int analog_pwd1_gpio;
 	struct camera_flash_cfg* flash_cfg;
 	int gpio_set_value_force; /*true: force to set gpio  */
 	int dev_node;
@@ -383,31 +388,43 @@ enum msm_mdp_hw_revision {
 	MDP_REV_40,
 	MDP_REV_41,
 	MDP_REV_42,
-	MDP_REV_43,
-	MDP_REV_44,
 };
 
 struct msm_panel_common_pdata {
 	uintptr_t hw_revision_addr;
 	int gpio;
-	bool bl_lock;
-	spinlock_t bl_spinlock;
 	int (*backlight_level)(int level, int max, int min);
 	int (*pmic_backlight)(int level);
-	int (*rotate_panel)(void);
-	int (*backlight) (int level, int mode);
 	int (*panel_num)(void);
 	void (*panel_config_gpio)(int);
 	int (*vga_switch)(int select_vga);
 	int *gpio_num;
+/*
 	u32 mdp_max_clk;
 	u32 mdp_max_bw;
 	u32 mdp_bw_ab_factor;
 	u32 mdp_bw_ib_factor;
+*/
+	int mdp_core_clk_rate;
+	unsigned num_mdp_clk;
+	int *mdp_core_clk_table;
+	int (*rgb_format)(void);
+	unsigned char (*shrink_pwm)(int val);
 #ifdef CONFIG_MSM_BUS_SCALING
 	struct msm_bus_scale_pdata *mdp_bus_scale_table;
 #endif
 	int mdp_rev;
+	int (*writeback_offset)(void);
+	int (*mdp_color_enhance)(void);
+	int (*mdp_gamma)(void);
+	void (*mdp_img_stick_wa)(bool);
+	unsigned long update_interval;
+	atomic_t img_stick_on;
+	struct panel_dcr_info *dcr_panel_pinfo;
+	unsigned int auto_bkl_stat;
+	int (*bkl_enable)(int);
+	int fpga_3d_config_addr;
+	struct gamma_curvy *abl_gamma_tbl;
 	u32 ov0_wb_size;  /* overlay0 writeback size */
 	u32 ov1_wb_size;  /* overlay1 writeback size */
 	u32 mem_hid;
@@ -474,14 +491,14 @@ struct mipi_dsi_panel_platform_data {
 	struct mipi_dsi_phy_ctrl *phy_ctrl_settings;
 };
 
-#define PANEL_NAME_MAX_LEN 50
 struct msm_fb_platform_data {
 	int (*detect_client)(const char *name);
 	int mddi_prescan;
-	unsigned char ext_resolution;
 	int (*allow_set_offset)(void);
-	char prim_panel_name[PANEL_NAME_MAX_LEN];
-	char ext_panel_name[PANEL_NAME_MAX_LEN];
+	int blt_mode;
+	uint32_t width;
+	uint32_t height;
+	bool     is_3d_panel;
 };
 
 struct msm_hdmi_platform_data {
