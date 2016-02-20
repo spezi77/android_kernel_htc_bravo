@@ -574,16 +574,7 @@ static void fl_lcdev_brightness_set(struct led_classdev *led_cdev,
 	} else
 		/* off and else */
 		mode = FL_MODE_OFF;
-
-	if (fl_str->chip_model == AAT3177)
-		aat3177_flashlight_control(mode);
-	else if (fl_str->chip_model == AAT1277)
-		aat1277_flashlight_control(mode);
-	else
-		aat1271_flashlight_control(mode);
-=======
         flashlight_control(mode);
->>>>>>> 37b2fe0... Fast Forward: add HTC BRAVO files and update configs
 
 	return;
 }
