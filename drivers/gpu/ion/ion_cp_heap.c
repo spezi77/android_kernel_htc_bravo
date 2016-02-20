@@ -111,8 +111,6 @@ enum {
 	HEAP_PROTECTED = 1,
 };
 
-#define DMA_ALLOC_RETRIES	5
-
 static int ion_cp_protect_mem(unsigned int phy_base, unsigned int size,
 			unsigned int permission_type, int version,
 			void *data);
@@ -120,71 +118,6 @@ static int ion_cp_protect_mem(unsigned int phy_base, unsigned int size,
 static int ion_cp_unprotect_mem(unsigned int phy_base, unsigned int size,
 				unsigned int permission_type, int version,
 				void *data);
-
-static int allocate_heap_memory(struct ion_heap *heap)
-{
-	struct device *dev = heap->priv;
-	struct ion_cp_heap *cp_heap =
-		container_of(heap, struct ion_cp_heap, heap);
-	int ret;
-	int tries = 0;
-	DEFINE_DMA_ATTRS(attrs);
-	dma_set_attr(DMA_ATTR_NO_KERNEL_MAPPING, &attrs);
-
-
-	if (cp_heap->cpu_addr)
-		return 0;
-
-	while (!cp_heap->cpu_addr && (++tries < DMA_ALLOC_RETRIES)) {
-		cp_heap->cpu_addr = dma_alloc_attrs(dev,
-						cp_heap->heap_size,
-						&(cp_heap->handle),
-						0,
-						&attrs);
-		if (!cp_heap->cpu_addr)
-			msleep(20);
-	}
-
-	if (!cp_heap->cpu_addr)
-		goto out;
-
-	cp_heap->base = cp_heap->handle;
-
-	cp_heap->pool = gen_pool_create(12, -1);
-	if (!cp_heap->pool)
-		goto out_free;
-
-	ret = gen_pool_add(cp_heap->pool, cp_heap->base,
-				cp_heap->heap_size, -1);
-	if (ret < 0)
-		goto out_pool;
-
-	return 0;
-
-out_pool:
-	gen_pool_destroy(cp_heap->pool);
-out_free:
-	dma_free_coherent(dev, cp_heap->heap_size, cp_heap->cpu_addr,
-				cp_heap->handle);
-out:
-	return ION_CP_ALLOCATE_FAIL;
-}
-
-static void free_heap_memory(struct ion_heap *heap)
-{
-	struct device *dev = heap->priv;
-	struct ion_cp_heap *cp_heap =
-		container_of(heap, struct ion_cp_heap, heap);
-
-	/* release memory */
-	dma_free_coherent(dev, cp_heap->heap_size, cp_heap->cpu_addr,
-				cp_heap->handle);
-	gen_pool_destroy(cp_heap->pool);
-	cp_heap->pool = NULL;
-	cp_heap->cpu_addr = 0;
-}
-
-
 
 /**
  * Get the total number of kernel mappings.
@@ -544,7 +477,8 @@ void *ion_map_fmem_buffer(struct ion_buffer *buffer, unsigned long phys_base,
 		return NULL;
 
 
-	ret = ioremap_pages(start, buffer->priv_phys, buffer->size, type);
+	ret = ioremap_page_range(start, start + buffer->size,
+			buffer->priv_phys, __pgprot(type->prot_pte));
 
 	if (!ret)
 		return (void *)start;
@@ -619,8 +553,6 @@ void ion_cp_heap_unmap_kernel(struct ion_heap *heap,
 
 	if (cp_heap->reusable)
 		unmap_kernel_range((unsigned long)buffer->vaddr, buffer->size);
-	else if (cp_heap->cma)
-		vunmap(buffer->vaddr);
 	else
 		__arch_iounmap(buffer->vaddr);
 
@@ -1088,6 +1020,14 @@ struct ion_heap *ion_cp_heap_create(struct ion_platform_heap *heap_data)
 
 	mutex_init(&cp_heap->lock);
 
+	cp_heap->pool = gen_pool_create(12, -1);
+	if (!cp_heap->pool)
+		goto free_heap;
+
+	cp_heap->base = heap_data->base;
+	ret = gen_pool_add(cp_heap->pool, cp_heap->base, heap_data->size, -1);
+	if (ret < 0)
+		goto destroy_pool;
 
 	cp_heap->allocated_bytes = 0;
 	cp_heap->umap_count = 0;
@@ -1097,11 +1037,9 @@ struct ion_heap *ion_cp_heap_create(struct ion_platform_heap *heap_data)
 	cp_heap->heap.ops = &cp_heap_ops;
 	cp_heap->heap.type = (enum ion_heap_type) ION_HEAP_TYPE_CP;
 	cp_heap->heap_protected = HEAP_NOT_PROTECTED;
-	cp_heap->secure_base = heap_data->base;
+	cp_heap->secure_base = cp_heap->base;
 	cp_heap->secure_size = heap_data->size;
 	cp_heap->has_outer_cache = heap_data->has_outer_cache;
-	cp_heap->heap_size = heap_data->size;
-
 	atomic_set(&cp_heap->protect_cnt, 0);
 	if (heap_data->extra_data) {
 		struct ion_cp_heap_pdata *extra_data =
@@ -1147,6 +1085,7 @@ struct ion_heap *ion_cp_heap_create(struct ion_platform_heap *heap_data)
 			goto destroy_pool;
 
 	}
+
 	return &cp_heap->heap;
 
 destroy_pool:
