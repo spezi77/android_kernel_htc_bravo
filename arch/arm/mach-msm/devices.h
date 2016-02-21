@@ -25,8 +25,6 @@ void __init msm9615_device_init(void);
 void __init msm9615_map_io(void);
 void __init msm_map_msm9615_io(void);
 void __init msm9615_init_irq(void);
-void config_gpio_table_dbg(uint32_t *, int, char *, int);
-#define config_gpio_table(a, b) config_gpio_table_dbg(a, b, __FILE__, __LINE__)
 int panel_init_spi_hack(void);
 
 /* for boards with multi-panels builtin */
