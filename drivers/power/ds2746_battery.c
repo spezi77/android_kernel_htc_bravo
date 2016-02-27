@@ -24,6 +24,7 @@ Original Auther:
 #include <linux/jiffies.h>
 #include <linux/workqueue.h>
 #include <linux/pm.h>
+#include <linux/slab.h>
 #include <linux/platform_device.h>
 #include <linux/android_alarm.h>
 #include <linux/init.h>
@@ -35,16 +36,19 @@ Original Auther:
 #include <linux/ds2746_battery.h>
 #include <linux/ds2746_battery_config.h>
 #include <linux/ds2746_param.h>
+/*#include <linux/ds2746_param_config.h>*/
 #include <linux/wrapper_types.h>
 #include <linux/smb329.h>
 #include <mach/htc_battery.h>
 #include <asm/mach-types.h>
 #include "../../arch/arm/mach-msm/proc_comm.h"
 #include <linux/i2c.h>  					/* for i2c_adapter, i2c_client define*/
+/*#include "../w1/w1.h"*/
+/*#include "../w1/slaves/w1_ds2784.h"*/
 #include <linux/time.h>
 #include <linux/rtc.h>
-#include <linux/slab.h>
-#include <mach/board.h>
+#include <linux/proc_fs.h>
+#include <asm/uaccess.h>
 
 struct ds2746_device_info {
 
@@ -54,7 +58,7 @@ struct ds2746_device_info {
 		struct work_struct monitor_work;
 		/* lock to protect the battery info */
 		struct mutex lock;
-		/* DS2746 data, valid after calling ds2746_battery_read_status() */
+		/* DS2784 data, valid after calling ds2784_battery_read_status() */
 		unsigned long update_time;	/* jiffies when data read */
 		struct alarm alarm;
 		struct wake_lock work_wake_lock;
@@ -62,6 +66,45 @@ struct ds2746_device_info {
 		ktime_t last_poll;
 };
 static struct wake_lock vbus_wake_lock;
+
+/* 
+ * proc_fs interface for fast charge
+ * by marc1706
+ */
+#define PROC_FAST_CHARGE_NAME "fast_charge"
+
+static struct proc_dir_entry *fast_charge;
+static int allow_fast_charge = 0;
+
+static int proc_read_fast_charge(char *page, char **start, off_t off, int count,
+	int *eof, void *data)
+{
+	int ret;
+
+	ret = sprintf(page, "%i\n", allow_fast_charge);
+
+	return ret;
+}
+
+static int proc_write_fast_charge(struct file *file, const char *buffer,
+	unsigned long count, void *data)
+{
+	char temp_buff[count + 1];
+	int ret;
+	int len = count;
+
+	if (copy_from_user(temp_buff, buffer, len))
+		return -EFAULT;
+	
+	sscanf(temp_buff, "%i", &ret);
+	
+	if (!ret || ret == 1)
+		allow_fast_charge = ret;
+	else
+		printk(KERN_ALERT "%s: Incorrect value:%i\n", __func__, ret);
+	
+	return ret;
+}
 
 /*========================================================================================
 
@@ -72,27 +115,25 @@ HTC power algorithm helper member and functions
 static struct poweralg_type poweralg = {0};
 static struct poweralg_config_type config = {0};
 static struct poweralg_config_type debug_config = {0};
-BOOL is_need_battery_id_detection = TRUE;
-/* workaround to get device_info */
-static struct ds2746_device_info *g_di_ptr = NULL;
 
-static int g_first_update_charger_ctl = 1;
-
-#define FAST_POLL	(1 * 30)
+#define FAST_POLL	(1 * 60)
 #define SLOW_POLL	(10 * 60)
-#define PREDIC_POLL	(1 * 20)
+#define PREDIC_POLL	20
 
-#define HTC_BATTERY_I2C_DEBUG_ENABLE		0
-#define HTC_BATTERY_DS2746_DEBUG_ENABLE 	1
+#define SOURCE_NONE	0
+#define SOURCE_USB	1
+#define SOURCE_AC	2
+
+#define CHARGE_OFF	0
+#define CHARGE_SLOW	1
+#define CHARGE_FAST	2
+
+#define BATTERY_ID_UNKNOWN 0
+#define HTC_BATTERY_DS2746_DEBUG_ENABLE 0
 
 /* DS2746 I2C BUS*/
 #define DS2746_I2C_BUS_ID   	0
 #define DS2746_I2C_SLAVE_ADDR   0x26
-
-/* safety timer */
-static UINT32 delta_time_sec = 0;
-static UINT32 chg_en_time_sec = 0;
-static UINT32 super_chg_on_time_sec = 0;
 
 /*========================================================================================
 
@@ -116,6 +157,7 @@ IC dependent defines
 /* DS2746 I2C I/O*/
 static struct i2c_adapter *i2c2 = NULL;
 static struct i2c_client *ds2746_i2c = NULL;
+static int htc_battery_initial = 0;
 
 int ds2746_i2c_write_u8(u8 value, u8 reg)
 {
@@ -139,7 +181,7 @@ int ds2746_i2c_write_u8(u8 value, u8 reg)
 		printk(DRIVER_ZONE "[%s] fail.\n", __func__);
 	}
 
-#if HTC_BATTERY_I2C_DEBUG_ENABLE
+#if HTC_BATTERY_DS2746_DEBUG_ENABLE
 	printk(DRIVER_ZONE "[%s] ds2746[0x%x]<-0x%x.\n", __func__, reg, value);
 #endif
 
@@ -170,7 +212,7 @@ int ds2746_i2c_read_u8(u8 *value, u8 reg)
 		printk(DRIVER_ZONE "[%s] fail.\n", __func__);
 	}
 
-#if HTC_BATTERY_I2C_DEBUG_ENABLE
+#if HTC_BATTERY_DS2746_DEBUG_ENABLE
 	printk(DRIVER_ZONE "[%s] ds2746[0x%x]=0x%x.\n", __func__, reg, *value);
 #endif
 
@@ -267,7 +309,6 @@ void calibrate_id_ohm(struct battery_type *battery)
 
 static BOOL is_charging_avaiable(void)
 {
-	if (poweralg.is_superchg_software_charger_timeout) return FALSE;
 	if (poweralg.is_software_charger_timeout) return FALSE;
 	if (!poweralg.protect_flags.is_charging_enable_available)return FALSE;
 	if (!poweralg.is_cable_in) return FALSE;
@@ -280,26 +321,18 @@ static BOOL is_charging_avaiable(void)
 
 static BOOL is_high_current_charging_avaialable(void)
 {
-	if (!poweralg.protect_flags.is_charging_high_current_avaialble)	return FALSE;
-	if (!poweralg.is_china_ac_in) return FALSE;
-	if (poweralg.charge_state == CHARGE_STATE_UNKNOWN) return FALSE;
-	return TRUE;
-}
+	bool ret;
 
-static BOOL is_super_current_charging_avaialable(void)
-{
-	if (!poweralg.is_super_ac) return FALSE;
-	return TRUE;
-}
-static BOOL is_set_min_taper_current(void)
-{
-	if ((config.min_taper_current_ma > 0) &&
-		(config.min_taper_current_mv > 0) &&
-		(poweralg.battery.current_mA < config.min_taper_current_ma) &&
-		(config.min_taper_current_mv < poweralg.battery.voltage_mV))
-		return TRUE;
-
-	return FALSE;
+	if (!poweralg.protect_flags.is_charging_high_current_avaialble)
+		ret = FALSE;
+	else if (!poweralg.is_china_ac_in && !allow_fast_charge)
+		ret = FALSE;
+	else if (poweralg.charge_state == CHARGE_STATE_UNKNOWN)
+		ret = FALSE;
+	else
+		ret = TRUE;
+	
+	return ret;
 }
 
 static void update_next_charge_state(void)
@@ -317,8 +350,6 @@ static void update_next_charge_state(void)
 
 	for (i = 0; i < 25; i++) /* maximun 25 times state transition to prevent from busy loop; ideally the transition time shall be less than 5 times.*/
 	{
-		/*printk(DRIVER_ZONE "%s.run[%d]: poweralg.charge_state=%d\n",
-			__func__, i,poweralg.charge_state);*/
 		next_charge_state = poweralg.charge_state;
 
 		/* 0. enter prediction state or not*/
@@ -352,7 +383,6 @@ static void update_next_charge_state(void)
 				poweralg.charge_state == CHARGE_STATE_PENDING ||
 				poweralg.charge_state == CHARGE_STATE_FULL_WAIT_STABLE ||
 				poweralg.charge_state == CHARGE_STATE_FULL_CHARGING ||
-				poweralg.charge_state == CHARGE_STATE_FULL_RECHARGING ||
 				poweralg.charge_state == CHARGE_STATE_FULL_PENDING){
 				if (!poweralg.is_cable_in){
 					next_charge_state = CHARGE_STATE_DISCHARGE;
@@ -394,7 +424,7 @@ static void update_next_charge_state(void)
 						/* -> full-charging, pending, dead*/
 						if (poweralg.capacity_01p > 990){
 							/* only ever charge-full, the capacity can be larger than 99.0%*/
-							next_charge_state = CHARGE_STATE_FULL_CHARGING; // MATT: should be FULL_RECHARGING ?
+							next_charge_state = CHARGE_STATE_FULL_CHARGING;
 						}
 						else if (poweralg.battery.voltage_mV >= config.full_charging_mv &&
 							poweralg.battery.current_mA >= 0 &&
@@ -430,39 +460,6 @@ static void update_next_charge_state(void)
 							poweralg.is_software_charger_timeout = TRUE;
 						}
 					}
-					/* is_superchg_software_charger_timeout: only triggered when superAC adapter in*/
-#if 0
-					if (config.superchg_software_charger_timeout_sec && poweralg.is_super_ac
-						&& FALSE==poweralg.is_superchg_software_charger_timeout){
-						/* software charger timer is enabled; for superAC charge*/
-						UINT32 end_time_ms = BAHW_MyGetMSecs();
-
-						if (end_time_ms - poweralg.state_start_time_ms >=
-							config.superchg_software_charger_timeout_sec * 1000){
-
-							printk(DRIVER_ZONE "superchg software charger timer timeout [%d->%d]\n",
-								poweralg.state_start_time_ms,
-								end_time_ms);
-							poweralg.is_superchg_software_charger_timeout = TRUE;
-						}
-					}
-#endif
-					/* Software should also toggle MCHG_EN within 4 hrs
-						to prevent charger HW safety timer expired. */
-#if 0
-					if (config.charger_hw_safety_timer_watchdog_sec && poweralg.is_cable_in){
-						UINT32 end_time_ms = BAHW_MyGetMSecs();
-						if (end_time_ms - poweralg.last_charger_enable_toggled_time_ms >=
-							config.charger_hw_safety_timer_watchdog_sec * 1000){
-							poweralg.last_charger_enable_toggled_time_ms = BAHW_MyGetMSecs();
-							poweralg.is_need_toggle_charger = TRUE;
-							printk(DRIVER_ZONE "need software toggle charger [%d->%d]\n",
-								poweralg.last_charger_enable_toggled_time_ms,
-								end_time_ms);
-
-						}
-					}
-#endif
 					break;
 				case CHARGE_STATE_FULL_WAIT_STABLE:
 					{
@@ -524,23 +521,8 @@ static void update_next_charge_state(void)
 						poweralg.battery.voltage_mV < config.voltage_recharge_mv) ||
 						(poweralg.battery.RARC_01p >= 0 &&
 						poweralg.battery.RARC_01p <= config.capacity_recharge_p * 10)){
-						/* -> full-recharging*/
-						next_charge_state = CHARGE_STATE_FULL_RECHARGING;
-					}
-					break;
-				case CHARGE_STATE_FULL_RECHARGING:
-					{
-						if (poweralg.battery.voltage_mV < config.voltage_exit_full_mv){
-							if (poweralg.capacity_01p > 990)
-								poweralg.capacity_01p = 990;
-							next_charge_state = CHARGE_STATE_CHARGING;
-						}
-						else if (poweralg.battery.voltage_mV >= config.full_charging_mv &&
-							poweralg.battery.current_mA >= 0 &&
-							poweralg.battery.current_mA <= config.full_charging_ma){
-							/* meet charge full terminate condition, check again*/
-							next_charge_state = CHARGE_STATE_FULL_CHARGING;
-						}
+						/* -> full-charging*/
+						next_charge_state = CHARGE_STATE_FULL_CHARGING;
 					}
 					break;
 				case CHARGE_STATE_PENDING:
@@ -617,8 +599,6 @@ static void update_next_charge_state(void)
 
 					break;
 				case CHARGE_STATE_CHARGING:
-					poweralg.is_need_toggle_charger = FALSE;
-					poweralg.last_charger_enable_toggled_time_ms = BAHW_MyGetMSecs();
 					poweralg.is_software_charger_timeout = FALSE;   /* reset software charger timer every time when charging re-starts*/
 					poweralg.is_charge_over_load = FALSE;
 					count_charge_over_load = 0;
@@ -650,6 +630,9 @@ static void __update_capacity(void)
 {
 	INT32 next_capacity_01p;
 
+#if HTC_BATTERY_DS2746_DEBUG_ENABLE
+	pr_info("ds2746_batt:__update_capacity start\n");
+#endif
 	if (poweralg.charge_state == CHARGE_STATE_PREDICTION ||
 		poweralg.charge_state == CHARGE_STATE_UNKNOWN){
 
@@ -659,21 +642,13 @@ static void __update_capacity(void)
 			poweralg.capacity_01p);
 	}
 	else if (poweralg.charge_state == CHARGE_STATE_FULL_CHARGING ||
-		poweralg.charge_state == CHARGE_STATE_FULL_RECHARGING ||
 		poweralg.charge_state == CHARGE_STATE_FULL_PENDING){
 
 		poweralg.capacity_01p = 1000;
 	}
 	else if (!is_charging_avaiable() && poweralg.is_voltage_stable){
-		/* If battery voltage is critical-low, decrease level by 3 */
-		if (poweralg.battery.voltage_mV < 3300) {
-			poweralg.capacity_01p -= 30; /* cap% = cap% - 3% */
-			if (poweralg.capacity_01p < 0)
-				poweralg.capacity_01p = 0;
-			battery_capacity_update(&poweralg.battery, poweralg.capacity_01p);
-		}
 		/* DISCHARGE ALG: capacity is based on KADC/RARC; only do this after cable in 3 minutes later*/
-		else if (poweralg.battery.KADC_01p <= 0){
+		if (poweralg.battery.KADC_01p <= 0){
 			if (poweralg.capacity_01p > 0)
 				poweralg.capacity_01p -= 10;
 			if (poweralg.capacity_01p > 0){
@@ -684,30 +659,14 @@ static void __update_capacity(void)
 		else{
 			if ((config.enable_weight_percentage) && (poweralg.capacity_01p <150 ||
 				poweralg.battery.RARC_01p> poweralg.battery.KADC_01p)){
-				INT32 w_kadc;
-				INT32 w_rarc;
-				INT32 Padc;
-				INT32 Pw;
-				if (0 <= poweralg.pdata->batt_param->padc)
-					Padc = poweralg.pdata->batt_param->padc[poweralg.battery.id_index];
-				else
-					Padc = 200; /* default */
-				if (0 <= poweralg.pdata->batt_param->pw)
-					Pw = poweralg.pdata->batt_param->pw[poweralg.battery.id_index];
-				else
-					Pw = 5;	/* default */
+
+#define Padc 200
+#define Pw   5
 /* 500=<W_KADC<=1000*/
-/* w_kadc is a linear function of the abs difference between kadc and rarc
-    w_kadc = f(|rarc-kadc|)
-    let u = |rarc-kadc|
-    f(u) is linear function ( Padc is the offset from x-axis, pw is the slope)
-	=> w_kadc is proportinal to u. and  w_kadc > 0
-	=> Padc (offset) must >= 0
-	=> Pw (slope) >= 0 */
 #define W_KADC(RARC, Percentage) Padc+(INT32)abs(RARC-Percentage)*Pw
 				/*! star_lee 20100426 - W_KADC must be larger or equal to 0*/
-				w_kadc = min(max(W_KADC(poweralg.battery.RARC_01p, poweralg.battery.KADC_01p), 0), 1000);
-				w_rarc = 1000 - w_kadc;
+				INT32 w_kadc = min(max(W_KADC(poweralg.battery.RARC_01p, poweralg.battery.KADC_01p), 0), 1000);
+				INT32 w_rarc = 1000 - w_kadc;
 				next_capacity_01p = (w_kadc * poweralg.battery.KADC_01p + w_rarc * poweralg.battery.RARC_01p)/1000;
 			}
 			else{
@@ -820,10 +779,7 @@ BOOL do_power_alg(BOOL is_event_triggered)
 	static INT32 s_level;
 
 	UINT32 now_time_ms = BAHW_MyGetMSecs();
-#if !HTC_BATTERY_DS2746_DEBUG_ENABLE
-	BOOL show_debug_message = FALSE;
-#endif
-	/*printk(DRIVER_ZONE "%s(%d) {\n",__func__, is_event_triggered);*/
+
 	/*------------------------------------------------------
 	1 get battery data and update charge state*/
 	if (!battery_param_update(&poweralg.battery, &poweralg.protect_flags)){
@@ -855,67 +811,27 @@ BOOL do_power_alg(BOOL is_event_triggered)
 
 		poweralg.battery.last_temp_01c = poweralg.battery.temp_01c;
 		poweralg.last_capacity_01p = poweralg.capacity_01p;
-		ds2746_blocking_notify(DS2746_LEVEL_UPDATE, &s_level);
-#if !HTC_BATTERY_DS2746_DEBUG_ENABLE
-		show_debug_message = TRUE;
-#endif
+		ds2746_blocking_notify(DS2784_LEVEL_UPDATE, &s_level);
 	}
 
 	bounding_fullly_charged_level(config.full_level);
 
-	/* is_superchg_software_charger_timeout: only triggered when superAC adapter in*/
-	if (config.superchg_software_charger_timeout_sec && poweralg.is_super_ac
-		&& FALSE==poweralg.is_superchg_software_charger_timeout){
-		super_chg_on_time_sec += delta_time_sec;
-		if (config.superchg_software_charger_timeout_sec <= super_chg_on_time_sec){
-			printk(DRIVER_ZONE "superchg charger on timer timeout: %u sec\n",
-				super_chg_on_time_sec);
-			poweralg.is_superchg_software_charger_timeout = TRUE;
-		}
-	}
 	/*------------------------------------------------------
 	3 charging function change*/
 	if (is_charging_avaiable()){
-		/* Software should also toggle MCHG_EN within 4 hrs
-			to prevent charger HW safety timer expired. */
-		if (config.charger_hw_safety_timer_watchdog_sec){
-			chg_en_time_sec += delta_time_sec;
-			if (config.charger_hw_safety_timer_watchdog_sec <= chg_en_time_sec) {
-				printk(DRIVER_ZONE "need software toggle charger: lasts %d sec\n", chg_en_time_sec);
-				chg_en_time_sec = 0;
-				ds2746_charger_control(DISABLE);
-				udelay(200);
-			}
-		}
-
 		if (is_high_current_charging_avaialable()){
-			if (is_super_current_charging_avaialable()) {
-				ds2746_charger_control(ENABLE_SUPER_CHG);
-			} else {
-				ds2746_charger_control(ENABLE_FAST_CHG);
-			}
-		} else {
-			ds2746_charger_control(ENABLE_SLOW_CHG);
+			ds2746_charger_control(CHARGE_FAST);
 		}
-
-		/* EXPRESS only: control charger IC BQ24170 minimum taper current */
-		// TODO: use a state variable here: set when only state changes
-		if ((config.min_taper_current_ma > 0)) {
-			if (is_set_min_taper_current()) {
-				ds2746_charger_control(ENABLE_MIN_TAPER);
-			} else {
-				ds2746_charger_control(DISABLE_MIN_TAPER);
-			}
+		else{
+			ds2746_charger_control(CHARGE_SLOW);
 		}
-	} else {
-		ds2746_charger_control(DISABLE);
-		chg_en_time_sec = 0;
-		super_chg_on_time_sec = 0;
-		poweralg.is_need_toggle_charger = FALSE;
+	}
+	else{
+		ds2746_charger_control(CHARGE_OFF);
 	}
 
 	if (config.debug_disable_hw_timer && poweralg.is_charge_over_load){
-		ds2746_charger_control(DISABLE);
+		ds2746_charger_control(CHARGE_OFF);
 		printk(DRIVER_ZONE "Toggle charger due to HW disable charger.\n");
 	}
 
@@ -924,16 +840,13 @@ BOOL do_power_alg(BOOL is_event_triggered)
 
 	/*powerlog_to_file(&poweralg);
 	update_os_batt_status(&poweralg);*/
-	htc_battery_update_change();
 
 #if HTC_BATTERY_DS2746_DEBUG_ENABLE
-	printk(DRIVER_ZONE "S=%d P=%d chg=%d cable=%d%d%d flg=%d%d%d dbg=%d%d%d%d fst_dischg=%d/%d [%u]\n",
+	printk(DRIVER_ZONE "[%d] P=%d cable=%d%d flags=%d%d%d debug=%d%d%d%d fst_discharge=%d/%d [%u]\n",
 		poweralg.charge_state,
 		poweralg.capacity_01p,
-		poweralg.charging_enable,
 		poweralg.is_cable_in,
 		poweralg.is_china_ac_in,
-		poweralg.is_super_ac,
 		poweralg.protect_flags.is_charging_enable_available,
 		poweralg.protect_flags.is_charging_high_current_avaialble,
 		poweralg.protect_flags.is_battery_dead,
@@ -944,21 +857,8 @@ BOOL do_power_alg(BOOL is_event_triggered)
 		poweralg.fst_discharge_capacity_01p,
 		poweralg.fst_discharge_acr_mAh,
 		BAHW_MyGetMSecs());
-#else
-	if (show_debug_message == TRUE)
-		printk(DRIVER_ZONE "P=%d V=%d T=%d I=%d ACR=%d/%d KADC=%d charger=%d%d \n",
-			poweralg.capacity_01p,
-			poweralg.battery.voltage_mV,
-			poweralg.battery.temp_01c,
-			poweralg.battery.current_mA,
-			poweralg.battery.charge_counter_mAh,
-			poweralg.battery.charge_full_real_mAh,
-			poweralg.battery.KADC_01p,
-			poweralg.charging_source,
-			poweralg.charging_enable);
 #endif
 
-	/*printk(DRIVER_ZONE "};\n");*/
 	return TRUE;
 }
 
@@ -974,43 +874,30 @@ void power_alg_init(struct poweralg_config_type *debug_config)
 	poweralg.is_need_calibrate_at_49p = TRUE;
 	poweralg.is_need_calibrate_at_14p = TRUE;
 	poweralg.is_charge_over_load = FALSE;
-	poweralg.is_cable_in = FALSE;
 	poweralg.is_china_ac_in = FALSE;
-	poweralg.is_super_ac = FALSE;
+	poweralg.is_cable_in = FALSE;
 	poweralg.is_voltage_stable = FALSE;
 	poweralg.is_software_charger_timeout = FALSE;
-	poweralg.is_superchg_software_charger_timeout = FALSE;
-	poweralg.is_need_toggle_charger = FALSE;
-	poweralg.last_charger_enable_toggled_time_ms = 0;
 	poweralg.state_start_time_ms = 0;
 
-	if(get_cable_status() == CONNECT_TYPE_USB) {
+	if(get_cable_status() == SOURCE_USB)
+	{
 		poweralg.is_cable_in = TRUE;
-		poweralg.charging_source = CONNECT_TYPE_USB;
-		ds2746_charger_control(ENABLE_SLOW_CHG);
+		poweralg.charging_source = SOURCE_USB;
+		ds2746_charger_control(CHARGE_SLOW);
 	}
-	else if (get_cable_status() == CONNECT_TYPE_AC) {
+	else if (get_cable_status() == SOURCE_AC)
+	{
 		poweralg.is_cable_in = TRUE;
 		poweralg.is_china_ac_in = TRUE;
-		poweralg.charging_source = CONNECT_TYPE_AC;
-		ds2746_charger_control(ENABLE_FAST_CHG);
-	}
-	else if (get_cable_status() == CONNECT_TYPE_9V_AC) {
-		poweralg.is_cable_in = TRUE;
-		poweralg.is_china_ac_in = TRUE;
-		poweralg.is_super_ac = TRUE;
-		poweralg.charging_source = CONNECT_TYPE_9V_AC;
-		ds2746_charger_control(ENABLE_SUPER_CHG);
-	} else {
-		poweralg.charging_source = CONNECT_TYPE_NONE;
-		ds2746_charger_control(DISABLE);
+		poweralg.charging_source = SOURCE_AC;
+		ds2746_charger_control(CHARGE_FAST);
+	} else{
+		poweralg.charging_source = SOURCE_NONE;
 	}
 	/*-------------------------------------------------------------
 	2. setup default config flags (board dependent)*/
-	if (poweralg.pdata && poweralg.pdata->func_poweralg_config_init)
-		poweralg.pdata->func_poweralg_config_init(&config);
-	else
-		poweralg_config_init(&config);
+	poweralg_config_init(&config);
 
 	if (debug_config){
 		config.debug_disable_shutdown = debug_config->debug_disable_shutdown;
@@ -1032,7 +919,6 @@ void power_alg_init(struct poweralg_config_type *debug_config)
 	poweralg.protect_flags.is_battery_dead = FALSE;
 	poweralg.protect_flags.is_charging_high_current_avaialble = FALSE;
 	poweralg.protect_flags.is_fake_room_temp = config.debug_fake_room_temp;
-	poweralg.protect_flags.func_update_charging_protect_flag = NULL;
 
 	/*-------------------------------------------------------------
 	4. setup default battery structure*/
@@ -1049,6 +935,9 @@ void power_alg_preinit(void)
 static BLOCKING_NOTIFIER_HEAD(ds2746_notifier_list);
 int ds2746_register_notifier(struct notifier_block *nb)
 {
+#if HTC_BATTERY_DS2746_DEBUG_ENABLE
+	pr_info("%s\n", __func__);
+#endif
 	return blocking_notifier_chain_register(&ds2746_notifier_list, nb);
 }
 
@@ -1061,36 +950,35 @@ int ds2746_unregister_notifier(struct notifier_block *nb)
 int ds2746_blocking_notify(unsigned long val, void *v)
 {
 	int chg_ctl;
+#if HTC_BATTERY_DS2746_DEBUG_ENABLE
+	pr_info("%s\n", __func__);
+#endif
 
-	if (val == DS2746_CHARGING_CONTROL){
+	if (val == DS2784_CHARGING_CONTROL){
 		chg_ctl = *(int *) v;
 		if (machine_is_passionc()){
+			pr_info("[ds2746_batt] Switch charging %d\n", chg_ctl);
 			if (chg_ctl <= 2){
 				gpio_direction_output(22, !(!!chg_ctl));/*PNC*/
 				set_charger_ctrl(chg_ctl);
 			}
 			return 0;
-		}else if (poweralg.battery.id_index != BATTERY_ID_UNKNOWN && (TOGGLE_CHARGER == chg_ctl || ENABLE_MIN_TAPER == chg_ctl || DISABLE_MIN_TAPER == chg_ctl)) {
-			if (0 == poweralg.charging_enable)
-				return 0;
-		} else if (poweralg.battery.id_index != BATTERY_ID_UNKNOWN && poweralg.charge_state != CHARGE_STATE_PREDICTION) {
+		}
+		else if (poweralg.battery.id_index != BATTERY_ID_UNKNOWN){
 			/* only notify at changes */
-			if (g_first_update_charger_ctl == 1) {
-				printk(DRIVER_ZONE "first update charger control forcely.\n");
-				g_first_update_charger_ctl = 0;
-				poweralg.charging_enable = chg_ctl;
-			} else if (poweralg.charging_enable == chg_ctl)
+			if (poweralg.charging_enable == chg_ctl)
 				return 0;
 			else
 				poweralg.charging_enable = chg_ctl;
-		} else {
-			if (poweralg.charging_enable == DISABLE) {
+		}
+		else{
+			/* poweralg.charging_enable = DISABLE;
+			v = DISABLE;
+			pr_info("[HTC_BATT] Unknow battery\n");*/
+			if (poweralg.charging_enable == chg_ctl)
 				return 0;
-			} else {
-				poweralg.charging_enable = DISABLE;
-				v = DISABLE;
-			}
-			printk(DRIVER_ZONE "Charging disable due to Unknown battery\n");
+			else
+				poweralg.charging_enable = chg_ctl;
 		}
 	}
 	return blocking_notifier_call_chain(&ds2746_notifier_list, val, v);
@@ -1112,6 +1000,7 @@ int ds2746_get_battery_info(struct battery_info_reply *batt_info)
 ssize_t htc_battery_show_attr(struct device_attribute *attr, char *buf)
 {
 	int len = 0;
+	pr_info("%s\n", __func__);
 	if (!strcmp(attr->attr.name, "batt_attr_text")){
 		len += scnprintf(buf +
 				len,
@@ -1121,7 +1010,7 @@ ssize_t htc_battery_show_attr(struct device_attribute *attr, char *buf)
 				"KADC(%%): %d;\n"
 				"RARC(%%): %d;\n"
 				"V_MBAT(mV): %d;\n"
-				"Battery_ID: %d;\n"
+				"Main_battery_ID(Kohm): %d;\n"
 				"pd_M: %d;\n"
 				"Current(mA): %d;\n"
 				"Temp: %d;\n"
@@ -1134,7 +1023,7 @@ ssize_t htc_battery_show_attr(struct device_attribute *attr, char *buf)
 				CEILING(poweralg.battery.KADC_01p, 10),
 				CEILING(poweralg.battery.RARC_01p, 10),
 				poweralg.battery.voltage_mV,
-				poweralg.battery.id_index,
+				poweralg.battery.id_ohm,
 				poweralg.battery.pd_m,
 				poweralg.battery.current_mA,
 				CEILING(poweralg.battery.temp_01c, 10),
@@ -1148,95 +1037,46 @@ ssize_t htc_battery_show_attr(struct device_attribute *attr, char *buf)
 	return len;
 }
 
-static void ds2746_program_alarm(struct ds2746_device_info *di, int seconds)
-{
-	ktime_t low_interval = ktime_set(seconds, 0);
-	ktime_t slack = ktime_set(1, 0);
-	ktime_t next;
-
-	next = ktime_add(di->last_poll, low_interval);
-
-	delta_time_sec = seconds;
-	alarm_start_range(&di->alarm, next, ktime_add(next, slack));
-}
 
 static int cable_status_handler_func(struct notifier_block *nfb,
 	unsigned long action, void *param)
 {
 	u32 cable_type = (u32) action;
+	pr_info("[ds2746_batt] cable change to %d\n", cable_type);
 	/* When the cable plug out, reset all the related flag,
 	Let algorithm machine to judge latest state */
-	if (cable_type == CONNECT_TYPE_NONE) {
+	if (cable_type == 0){
 		poweralg.is_cable_in = 0;
 		poweralg.is_china_ac_in = 0;
-		poweralg.is_super_ac = 0;
-		poweralg.charging_source = cable_type;
-		chg_en_time_sec = super_chg_on_time_sec = delta_time_sec = 0;
-		if (TRUE == poweralg.is_superchg_software_charger_timeout) {
-			poweralg.is_superchg_software_charger_timeout = FALSE;	/* reset */
-			printk(DRIVER_ZONE "reset superchg software timer\n");
-		}
-		//ds2746_blocking_notify(DS2746_CHARGING_CONTROL, &poweralg.charging_source);
-		if (g_di_ptr) {
-			alarm_try_to_cancel(&g_di_ptr->alarm);
-			ds2746_program_alarm(g_di_ptr, 0);
-		}
-		else {
-			printk(DRIVER_ZONE "charger out but no di ptr.\n");
-		}
-	} else if (cable_type == CONNECT_TYPE_USB) {
+		/*htc_batt_info.rep.OTP_Flag = 0;
+		htc_batt_info.rep.charging_sts_flag = 0;
+		htc_batt_info.full_charge_count = 0;*/
+	}
+	else if (cable_type == 1){
 		poweralg.is_cable_in = 1;
 		poweralg.is_china_ac_in = 0;
-		poweralg.is_super_ac = 0;
-		poweralg.charging_source = cable_type;
-		chg_en_time_sec = super_chg_on_time_sec = delta_time_sec = 0;
-		//ds2746_blocking_notify(DS2746_CHARGING_CONTROL, &poweralg.charging_source);
-		if (g_di_ptr) {
-			alarm_try_to_cancel(&g_di_ptr->alarm);
-			ds2746_program_alarm(g_di_ptr, 0);
-		}
-		else {
-			printk(DRIVER_ZONE "charger in but no di ptr.\n");
-		}
-	} else if (cable_type == CONNECT_TYPE_AC) {
+	}
+	else if (cable_type == 2){
 		poweralg.is_cable_in = 1;
 		poweralg.is_china_ac_in = 1;
-		poweralg.is_super_ac = 0;
-		poweralg.charging_source = cable_type;
-		chg_en_time_sec = super_chg_on_time_sec = delta_time_sec = 0;
-		//ds2746_blocking_notify(DS2746_CHARGING_CONTROL, &poweralg.charging_source);
-		if (g_di_ptr) {
-			alarm_try_to_cancel(&g_di_ptr->alarm);
-			ds2746_program_alarm(g_di_ptr, 0);
-		}
-		else {
-			printk(DRIVER_ZONE "charger in but no di ptr.\n");
-		}
-	} else if (cable_type == CONNECT_TYPE_9V_AC) {
-		poweralg.is_cable_in = 1;
-		poweralg.is_china_ac_in = 1;
-		poweralg.is_super_ac = 1;
-		poweralg.charging_source = cable_type;
-		chg_en_time_sec = super_chg_on_time_sec = delta_time_sec = 0;
-		//ds2746_blocking_notify(DS2746_CHARGING_CONTROL, &poweralg.charging_source);
-		if (g_di_ptr) {
-			alarm_try_to_cancel(&g_di_ptr->alarm);
-			ds2746_program_alarm(g_di_ptr, 0);
-		}
-		else {
-			printk(DRIVER_ZONE "charger in but no di ptr.\n");
-		}
-	} else if (cable_type == 0xff) {
+	}
+	else if (cable_type == 0xff){
 		if (param)
 			config.full_level = *(INT32 *)param;
-		printk(DRIVER_ZONE "Set the full level to %d\n", config.full_level);
+		pr_info("[ds2746_batt] Set the full level to %d\n", config.full_level);
 		return NOTIFY_OK;
-	} else if (cable_type == 0x10) {
+	}
+	else if (cable_type == 0x10){
 		poweralg.protect_flags.is_fake_room_temp = TRUE;
-		printk(DRIVER_ZONE "enable fake temp mode\n");
+		pr_info("[ds2746_batt] enable fake temp mode\n");
 		return NOTIFY_OK;
 	}
 
+	if (cable_type <= 2){
+		poweralg.charging_source = cable_type;
+		ds2746_blocking_notify(DS2784_CHARGING_CONTROL,
+			&poweralg.charging_source);
+	}
 	return NOTIFY_OK;
 }
 
@@ -1247,35 +1087,52 @@ static struct notifier_block cable_status_handler =
 
 void ds2746_charger_control(int type)
 {
+	int chg_ctl = DISABLE;
 	int charge_type = type;
-	/* printk(DRIVER_ZONE "%s(%d)\n",__func__, type); */
 
 	switch (charge_type){
-		case DISABLE:
+		case CHARGE_OFF:
 			/* CHARGER_EN is active low.  Set to 1 to disable. */
-			ds2746_blocking_notify(DS2746_CHARGING_CONTROL, &charge_type);
+			chg_ctl = DISABLE;
+			ds2746_blocking_notify(DS2784_CHARGING_CONTROL, &chg_ctl);
+			/*if (temp >= TEMP_CRITICAL)
+				pr_info("batt: charging OFF [OVERTEMP]\n");
+			else if (htc_batt_info.rep.cooldown)
+				pr_info("batt: charging OFF [COOLDOWN]\n");
+			else if (htc_batt_info.rep.battery_full)
+				pr_info("batt: charging OFF [FULL]\n");
+			else*/
+#if HTC_BATTERY_DS2746_DEBUG_ENABLE
+			pr_info("batt: charging OFF\n");
+#endif
 			break;
-		case ENABLE_SLOW_CHG:
-			ds2746_blocking_notify(DS2746_CHARGING_CONTROL, &charge_type);
+		case CHARGE_SLOW:
+			chg_ctl = ENABLE_SLOW_CHG;
+			ds2746_blocking_notify(DS2784_CHARGING_CONTROL, &chg_ctl);
+#if HTC_BATTERY_DS2746_DEBUG_ENABLE
+			pr_info("batt: charging SLOW\n");
+#endif 
 			break;
-		case ENABLE_FAST_CHG:
-			ds2746_blocking_notify(DS2746_CHARGING_CONTROL, &charge_type);
-			break;
-		case ENABLE_SUPER_CHG:
-			ds2746_blocking_notify(DS2746_CHARGING_CONTROL, &charge_type);
-			break;
-		case TOGGLE_CHARGER:
-			ds2746_blocking_notify(DS2746_CHARGING_CONTROL, &charge_type);
-			break;
-		case ENABLE_MIN_TAPER:
-			ds2746_blocking_notify(DS2746_CHARGING_CONTROL, &charge_type);
-			break;
-		case DISABLE_MIN_TAPER:
-			ds2746_blocking_notify(DS2746_CHARGING_CONTROL, &charge_type);
+		case CHARGE_FAST:
+			chg_ctl = ENABLE_FAST_CHG;
+			ds2746_blocking_notify(DS2784_CHARGING_CONTROL, &chg_ctl);
+#if HTC_BATTERY_DS2746_DEBUG_ENABLE
+			pr_info("batt: charging FAST\n");
+#endif
 			break;
 	}
 }
 
+static void ds2746_program_alarm(struct ds2746_device_info *di, int seconds)
+{
+	ktime_t low_interval = ktime_set(seconds - 10, 0);
+	ktime_t slack = ktime_set(20, 0);
+	ktime_t next;
+
+	next = ktime_add(di->last_poll, low_interval);
+
+	alarm_start_range(&di->alarm, next, ktime_add(next, slack));
+}
 
 static void ds2746_battery_work(struct work_struct *work)
 {
@@ -1283,6 +1140,11 @@ static void ds2746_battery_work(struct work_struct *work)
 				struct ds2746_device_info, monitor_work);
 	unsigned long flags;
 
+	if (!htc_battery_initial)    return;
+
+#if HTC_BATTERY_DS2746_DEBUG_ENABLE
+	pr_info("[ds2746_batt] ds2746_battery_work*\n");
+#endif
 	do_power_alg(0);
 	get_state_check_interval_min_sec();
 	di->last_poll = alarm_get_elapsed_realtime();
@@ -1302,6 +1164,9 @@ static void ds2746_battery_work(struct work_struct *work)
 static void ds2746_battery_alarm(struct alarm *alarm)
 {
 	struct ds2746_device_info *di = container_of(alarm, struct ds2746_device_info, alarm);
+
+	if (!htc_battery_initial)    return;
+
 	wake_lock(&di->work_wake_lock);
 	queue_work(di->monitor_wqueue, &di->monitor_work);
 }
@@ -1310,31 +1175,14 @@ static int ds2746_battery_probe(struct platform_device *pdev)
 {
 	int rc;
 	struct ds2746_device_info *di;
-	ds2746_platform_data *pdata = pdev->dev.platform_data; // MATT: wait to remove
+	struct ds2746_platform_data *pdata = pdev->dev.platform_data;
 
-	poweralg.pdata = pdev->dev.platform_data;
+	pr_info("[ds2746_batt] ds2746_battery_prob\n");
+
 	poweralg.battery.thermal_id = pdata->func_get_thermal_id();
-	/* if func_get_battery_id is Null or
-		it returns negative value => we need id detection */
-	if ((pdata->func_get_battery_id != NULL) && (0 < pdata->func_get_battery_id())) {
-		poweralg.battery.id_index = pdata->func_get_battery_id();
-		if (NULL != poweralg.pdata->batt_param->fl_25) {
-			poweralg.battery.charge_full_design_mAh =
-				poweralg.pdata->batt_param->fl_25[poweralg.battery.id_index];
-		} else
-			poweralg.battery.charge_full_design_mAh = DS2746_FULL_CAPACITY_DEFAULT;
-		poweralg.battery.charge_full_real_mAh = poweralg.battery.charge_full_design_mAh;
-		is_need_battery_id_detection = FALSE;
-	}
-	else {
-		poweralg.battery.id_index = BATTERY_ID_UNKNOWN;
-		is_need_battery_id_detection = TRUE;
-	}
 
 	power_alg_preinit();
 	power_alg_init(&debug_config);
-	// must set func hook after power_alg_init().
-	poweralg.protect_flags.func_update_charging_protect_flag = pdata->func_update_charging_protect_flag;
 
 	di = kzalloc(sizeof(*di), GFP_KERNEL);
 	if (!di){
@@ -1363,8 +1211,7 @@ static int ds2746_battery_probe(struct platform_device *pdev)
 		ds2746_battery_alarm);
 	wake_lock(&di->work_wake_lock);
 	queue_work(di->monitor_wqueue, &di->monitor_work);
-
-	g_di_ptr = di; /* save di to global */
+	htc_battery_initial = 1;
 	return 0;
 
 	fail_workqueue : fail_register : kfree(di);
@@ -1388,9 +1235,10 @@ static int ds2746_suspend(struct device *dev)
 	struct platform_device *pdev = to_platform_device(dev);
 	struct ds2746_device_info *di = platform_get_drvdata(pdev);
 	unsigned long flags;
+	pr_info("ds2746_batt:ds2746_suspend\n");
 	/* If we are on battery, reduce our update rate until
 	 * we next resume.*/
-	if (poweralg.charging_source == CONNECT_TYPE_NONE) {
+	if (poweralg.charging_source == SOURCE_NONE){
 		local_irq_save(flags);
 		ds2746_program_alarm(di, SLOW_POLL);
 		di->slow_poll = 1;
@@ -1412,6 +1260,7 @@ static void ds2746_resume(struct device *dev)
 	 * we suspend again.*/
 	/*gpio_direction_output(87, 1);*/
 	ndelay(100 * 1000);
+	pr_info("ds2746_batt:ds2746_resume\n");
 	if (di->slow_poll){
 		local_irq_save(flags);
 		ds2746_program_alarm(di, FAST_POLL);
@@ -1440,6 +1289,7 @@ static int __init ds2746_battery_init(void)
 {
 	int ret;
 
+	pr_info("[ds2746_batt]ds2746_battery_init");
 	wake_lock_init(&vbus_wake_lock, WAKE_LOCK_SUSPEND, "vbus_present");
 	register_notifier_cable_status(&cable_status_handler);
 
@@ -1447,6 +1297,19 @@ static int __init ds2746_battery_init(void)
 	if (ret < 0){
 		return ret;
 	}
+
+	fast_charge = create_proc_entry(PROC_FAST_CHARGE_NAME, 0644, NULL);
+	
+	if (fast_charge == NULL) {
+		remove_proc_entry(PROC_FAST_CHARGE_NAME, NULL);
+		printk(KERN_ALERT "%s: Unable to create /proc/%s\n", __func__,
+		       PROC_FAST_CHARGE_NAME);
+	}
+	fast_charge->read_proc = proc_read_fast_charge;
+	fast_charge->write_proc = proc_write_fast_charge;
+	fast_charge->uid = 0;
+	fast_charge->gid = 0;
+	printk(KERN_INFO "/proc/%s created\n", PROC_FAST_CHARGE_NAME);
 
 	/*mutex_init(&htc_batt_info.lock);*/
 	return platform_driver_register(&ds2746_battery_driver);
