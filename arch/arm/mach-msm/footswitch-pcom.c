@@ -22,7 +22,11 @@
 #include "proc_comm.h"
 
 /* PCOM power rail IDs */
+#ifdef CONFIG_ARCH_QSD8X50
+#define PCOM_FS_GRP		0
+#else
 #define PCOM_FS_GRP		8
+#endif
 #define PCOM_FS_GRP_2D		58
 #define PCOM_FS_MDP		14
 #define PCOM_FS_MFC		68
@@ -69,7 +73,11 @@ static inline int set_rail_mode(int pcom_id, int mode)
 {
 	int  rc;
 
+#ifdef CONFIG_ARCH_QSD8X50
+	rc = msm_proc_comm(PCOM_CLK_REGIME_SEC_RAIL_CONTROL, &pcom_id, &mode);
+#else
 	rc = msm_proc_comm(PCOM_CLKCTL_RPC_RAIL_CONTROL, &pcom_id, &mode);
+#endif
 	if (!rc && pcom_id)
 		rc = -EINVAL;
 
@@ -123,7 +131,11 @@ static int footswitch_enable(struct regulator_dev *rdev)
 	if (rc)
 		return rc;
 
+#ifdef CONFIG_ARCH_QSD8X50
+	rc = set_rail_state(fs->pcom_id, PCOM_CLK_REGIME_SEC_RAIL_ENABLE);
+#else
 	rc = set_rail_state(fs->pcom_id, PCOM_CLKCTL_RPC_RAIL_ENABLE);
+#endif
 	if (!rc)
 		fs->is_enabled = true;
 
@@ -132,6 +144,7 @@ static int footswitch_enable(struct regulator_dev *rdev)
 	return rc;
 }
 
+#ifdef CONFIG_ARCH_QSD8X50
 static int footswitch_disable(struct regulator_dev *rdev)
 {
 	struct footswitch *fs = rdev_get_drvdata(rdev);
@@ -149,13 +162,50 @@ static int footswitch_disable(struct regulator_dev *rdev)
 
 	return rc;
 }
+#endif
 
 static struct regulator_ops footswitch_ops = {
 	.is_enabled = footswitch_is_enabled,
 	.enable = footswitch_enable,
+#ifndef CONFIG_ARCH_QSD8X50
 	.disable = footswitch_disable,
+#endif
 };
 
+#ifdef CONFIG_ARCH_QSD8X50
+#define FOOTSWITCH(_id, _pcom_id, _name, _src_clk, _rate, _ahb_clk, _is_manual) \
+	[_id] = { \
+		.desc = { \
+			.id = _id, \
+			.name = _name, \
+			.ops = &footswitch_ops, \
+			.type = REGULATOR_VOLTAGE, \
+			.owner = THIS_MODULE, \
+		}, \
+		.pcom_id = _pcom_id, \
+		.has_src_clk = _src_clk, \
+		.src_clk_init_rate = _rate, \
+		.has_ahb_clk = _ahb_clk, \
+		.is_manual = _is_manual, \
+	}
+
+static struct footswitch footswitches[] = {
+	FOOTSWITCH(FS_GFX3D,  PCOM_FS_GRP,
+		"fs_gfx3d",   true, 24576000, true, true),
+	FOOTSWITCH(FS_GFX2D0, PCOM_FS_GRP_2D,
+		"fs_gfx2d0", false, 24576000, true, true),
+	FOOTSWITCH(FS_MDP,    PCOM_FS_MDP,
+		"fs_mdp",    false, 24576000, true, true),
+	FOOTSWITCH(FS_MFC,    PCOM_FS_MFC,
+		"fs_mfc",    false, 24576000, true, true),
+	FOOTSWITCH(FS_ROT,    PCOM_FS_ROTATOR,
+		"fs_rot",    false,        0, true, true),
+	FOOTSWITCH(FS_VFE,    PCOM_FS_VFE,
+		"fs_vfe",    false, 24576000, true, true),
+	FOOTSWITCH(FS_VPE,    PCOM_FS_VPE,
+		"fs_vpe",    false, 24576000, false, true),
+};
+#else
 #define FOOTSWITCH(_id, _pcom_id, _name, _src_clk, _rate, _ahb_clk) \
 	[_id] = { \
 		.desc = { \
@@ -186,10 +236,11 @@ static struct footswitch footswitches[] = {
 	FOOTSWITCH(FS_VPE,    PCOM_FS_VPE,
 		"fs_vpe",    false, 24576000, false),
 };
+#endif
 
 static int get_clocks(struct device *dev, struct footswitch *fs)
 {
-	int rc;
+	int rc = 0;
 
 	/*
 	 * Some SoCs may not have a separate rate-settable clock.
@@ -197,9 +248,13 @@ static int get_clocks(struct device *dev, struct footswitch *fs)
 	 * rate-setting instead.
 	 */
 	if (fs->has_src_clk) {
+#ifdef CONFIG_ARCH_QSD8X50
+		fs->src_clk = clk_get(dev, "core_clk");
+#else
 		fs->src_clk = clk_get(dev, "src_clk");
 		if (IS_ERR(fs->src_clk))
 			fs->src_clk = clk_get(dev, "core_clk");
+#endif
 	} else {
 		fs->src_clk = clk_get(dev, "core_clk");
 	}
@@ -239,7 +294,9 @@ static void put_clocks(struct footswitch *fs)
 {
 	clk_put(fs->src_clk);
 	clk_put(fs->core_clk);
+#ifndef CONFIG_ARCH_QSD8X50
 	clk_put(fs->ahb_clk);
+#endif
 }
 
 static int footswitch_probe(struct platform_device *pdev)
@@ -311,7 +368,11 @@ static int __init footswitch_init(void)
 	 */
 	for (fs = footswitches; fs < footswitches + ARRAY_SIZE(footswitches);
 	     fs++) {
+#ifdef CONFIG_ARCH_QSD8X50
+		set_rail_state(fs->pcom_id, PCOM_CLK_REGIME_SEC_RAIL_ENABLE);
+#else
 		set_rail_state(fs->pcom_id, PCOM_CLKCTL_RPC_RAIL_ENABLE);
+#endif
 		ret = set_rail_mode(fs->pcom_id, PCOM_RAIL_MODE_MANUAL);
 		if (!ret)
 			fs->is_manual = 1;
