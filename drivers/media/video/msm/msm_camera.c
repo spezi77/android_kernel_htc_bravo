@@ -15,47 +15,29 @@
  * 02110-1301, USA.
  *
  */
-/*FIXME: most allocations need not be GFP_ATOMIC*/
+
 /* FIXME: management of mutexes */
-/* FIXME: msm_pmem_region_lookup return values */
-/* FIXME: way too many copy to/from user */
-/* FIXME: does region->active mean free */
-/* FIXME: check limits on command lenghts passed from userspace */
-/* FIXME: __msm_release: which queues should we flush when opencnt != 0 */
 
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <mach/board.h>
-#include <linux/leds.h>
-#include <linux/uaccess.h>
+
+#include <linux/dma-mapping.h>
 #include <linux/fs.h>
 #include <linux/list.h>
 #include <linux/uaccess.h>
 #include <linux/android_pmem.h>
 #include <linux/poll.h>
-#include <linux/sched.h>
-#include <media/msm_camera-7x30.h>
-#include <media/msm_camera_sensor.h>
-#include <mach/camera-7x30.h>
-#include <linux/htc_flashlight.h>
-#include <linux/delay.h>
+#include <media/msm_camera.h>
+#include <mach/camera.h>
 #include <asm/cacheflush.h>
 #include <linux/rtc.h>
 #include <linux/slab.h>
-#include <linux/pm_qos.h>
-
-#ifdef CONFIG_RAWCHIP
-#include "rawchip/rawchip.h"
-#include "rawchip/Yushan_API.h"
-#endif
-
-DEFINE_MUTEX(pp_prev_lock);
-DEFINE_MUTEX(pp_snap_lock);
-DEFINE_MUTEX(ctrl_cmd_lock);
+#include <mach/msm_flashlight.h>
+DEFINE_MUTEX(hlist_mut);
 
 #define MSM_MAX_CAMERA_SENSORS 5
-#define CAMERA_STOP_SNAPSHOT 42
 
 #define ERR_USER_COPY(to) pr_err("[CAM]%s(%d): copy %s user\n", \
 				__func__, __LINE__, ((to) ? "to" : "from"))
@@ -65,8 +47,6 @@ DEFINE_MUTEX(ctrl_cmd_lock);
 static struct class *msm_class;
 static dev_t msm_devno;
 static LIST_HEAD(msm_sensors);
-struct  msm_control_device *g_v4l2_control_device;
-int g_v4l2_opencnt;
 
 #define __CONTAINS(r, v, l, field) ({				\
 	typeof(r) __r = r;					\
@@ -100,24 +80,13 @@ int g_v4l2_opencnt;
 	res;							\
 })
 
-#ifdef CONFIG_RAWCHIP
-int Yushan_init = 0;
-#endif
-
 static inline void free_qcmd(struct msm_queue_cmd *qcmd)
 {
-	if (!qcmd || !atomic_read(&qcmd->on_heap))
+	if (!qcmd || !qcmd->on_heap)
 		return;
-	if (!atomic_sub_return(1, &qcmd->on_heap))
+	CDBG("%s qcmd->on_heap:%d\n",__func__,qcmd->on_heap);
+	if (!--qcmd->on_heap)
 		kfree(qcmd);
-}
-
-static void msm_region_init(struct msm_sync *sync)
-{
-	INIT_HLIST_HEAD(&sync->pmem_frames);
-	INIT_HLIST_HEAD(&sync->pmem_stats);
-	spin_lock_init(&sync->pmem_frame_spinlock);
-	spin_lock_init(&sync->pmem_stats_spinlock);
 }
 
 static void msm_queue_init(struct msm_device_queue *queue, const char *name)
@@ -143,75 +112,50 @@ static void msm_enqueue(struct msm_device_queue *queue,
 		pr_info("[CAM]%s: queue %s new max is %d\n", __func__,
 			queue->name, queue->max);
 #else
-		/* HTC */
-		if (queue->max < 1024)
+		if(queue->max < 1024)
 			pr_info("[CAM]%s: queue %s new max is %d\n", __func__,
 			queue->name, queue->max);
 #endif
 	}
 	list_add_tail(entry, &queue->list);
 	wake_up(&queue->wait);
-	CDBG("[CAM] %s: woke up %s\n", __func__, queue->name);
+	CDBG("%s: woke up %s\n", __func__, queue->name);
 	spin_unlock_irqrestore(&queue->lock, flags);
 }
 
-static void msm_enqueue_vpe(struct msm_device_queue *queue,
-			struct list_head *entry)
-{
-	unsigned long flags;
-	spin_lock_irqsave(&queue->lock, flags);
-	queue->len++;
-	if (queue->len > queue->max) {
-		queue->max = queue->len;
-		pr_info("[CAM]%s: queue %s new max is %d\n", __func__,
-			queue->name, queue->max);
-	}
-	list_add_tail(entry, &queue->list);
-	CDBG("[CAM] %s: woke up %s\n", __func__, queue->name);
-		spin_unlock_irqrestore(&queue->lock, flags);
-}
-
 #define msm_dequeue(queue, member) ({				\
-	unsigned long flags;					\
+	unsigned long flags;							\
 	struct msm_device_queue *__q = (queue);			\
-	struct msm_queue_cmd *qcmd = 0;				\
+	struct msm_queue_cmd *qcmd = 0;					\
 	spin_lock_irqsave(&__q->lock, flags);			\
-	if (!__q->len)   \
-		pr_info("[CAM]%s: queue name: %s: queue len: %d", \
-				__func__, __q->name, __q->len); \
-	if (!list_empty(&__q->list)) {				\
-		__q->len--;					\
-		qcmd = list_first_entry(&__q->list,		\
-				struct msm_queue_cmd, member);	\
-		if ((qcmd) && (&qcmd->member) && (&qcmd->member.next)) {  \
-		list_del_init(&qcmd->member);			\
-		}                                   \
+	if (!list_empty(&__q->list)) {					\
+		__q->len--;									\
+		qcmd = list_first_entry(&__q->list,			\
+				struct msm_queue_cmd, member);		\
+				if (qcmd) {                         \
+					list_del_init(&qcmd->member);	\
+				}                                   \
 	}												\
-		spin_unlock_irqrestore(&__q->lock, flags);	\
-	qcmd;							\
+	spin_unlock_irqrestore(&__q->lock, flags);		\
+	qcmd;											\
 })
 
+
 #define msm_queue_drain(queue, member) do {			\
-	unsigned long flags;					\
+	unsigned long flags;							\
 	struct msm_device_queue *__q = (queue);			\
-	struct msm_queue_cmd *qcmd;				\
+	struct msm_queue_cmd *qcmd;						\
 	spin_lock_irqsave(&__q->lock, flags);			\
-	pr_info("[CAM] %s: draining queue %s\n", __func__, __q->name);	\
-	pr_info("[CAM]%s,q->len = %d\n", __func__, __q->len);	\
-	while (!list_empty(&__q->list)) {			\
-		__q->len--;					\
-		qcmd = list_first_entry(&__q->list,		\
-			struct msm_queue_cmd, member);		\
-		if (qcmd) {                         \
-			if ((&qcmd->member) && (&qcmd->member.next) && (&qcmd->member.prev)) \
-				CDBG("[CAM] %s, qcmd->member.next= 0x%p\n", __func__, qcmd->member.next);	\
-				list_del_init(&qcmd->member);			\
-		free_qcmd(qcmd);				\
-		}                                   \
-	};							\
+	CDBG("%s: draining queue %s\n", __func__, __q->name);	\
+	while (!list_empty(&__q->list)) {				\
+		qcmd = list_first_entry(&__q->list,			\
+			struct msm_queue_cmd, member);			\
+		list_del_init(&qcmd->member);				\
+		free_qcmd(qcmd);							\
+	};												\
 	__q->len = 0;									\
 	spin_unlock_irqrestore(&__q->lock, flags);		\
-} while (0)
+} while(0)
 
 static int check_overlap(struct hlist_head *ptype,
 			unsigned long paddr,
@@ -225,7 +169,8 @@ static int check_overlap(struct hlist_head *ptype,
 		if (CONTAINS(region, &t, paddr) ||
 				CONTAINS(&t, region, paddr) ||
 				OVERLAPS(region, &t, paddr)) {
-			pr_err("[CAM] region (PHYS %p len %ld)"
+			printk(KERN_ERR
+				" region (PHYS %p len %ld)"
 				" clashes with registered region"
 				" (paddr %p len %ld)\n",
 				(void *)t.paddr, t.len,
@@ -239,7 +184,6 @@ static int check_overlap(struct hlist_head *ptype,
 
 static int check_pmem_info(struct msm_pmem_info *info, int len)
 {
-	/* HTC */
 	if (info->offset & (PAGE_SIZE - 1)) {
 		pr_err("[CAM]%s: pmem offset is not page-aligned\n", __func__);
 		goto error;
@@ -263,7 +207,7 @@ error:
 }
 
 static int msm_pmem_table_add(struct hlist_head *ptype,
-	struct msm_pmem_info *info, spinlock_t *pmem_spinlock)
+	struct msm_pmem_info *info)
 {
 	struct file *file;
 	unsigned long paddr;
@@ -271,7 +215,6 @@ static int msm_pmem_table_add(struct hlist_head *ptype,
 	unsigned long len;
 	int rc;
 	struct msm_pmem_region *region;
-	unsigned long flags = 0;
 
 	rc = get_pmem_file(info->fd, &paddr, &kvstart, &len, &file);
 	if (rc < 0) {
@@ -292,14 +235,10 @@ static int msm_pmem_table_add(struct hlist_head *ptype,
 	kvstart += info->offset;
 	len = info->len;
 
-	spin_lock_irqsave(pmem_spinlock, flags);
-	if (check_overlap(ptype, paddr, len) < 0) {
-		spin_unlock_irqrestore(pmem_spinlock, flags);
+	if (check_overlap(ptype, paddr, len) < 0)
 		return -EINVAL;
-	}
-	spin_unlock_irqrestore(pmem_spinlock, flags);
 
-	CDBG("[CAM] %s: type %d, paddr 0x%lx, vaddr 0x%lx\n",
+	CDBG("%s: type %d, paddr 0x%lx, vaddr 0x%lx\n",
 		__func__,
 		info->type, paddr, (unsigned long)info->vaddr);
 
@@ -307,7 +246,6 @@ static int msm_pmem_table_add(struct hlist_head *ptype,
 	if (!region)
 		return -ENOMEM;
 
-	spin_lock_irqsave(pmem_spinlock, flags);
 	INIT_HLIST_NODE(&region->list);
 
 	region->paddr = paddr;
@@ -317,105 +255,63 @@ static int msm_pmem_table_add(struct hlist_head *ptype,
 	memcpy(&region->info, info, sizeof(region->info));
 
 	hlist_add_head(&(region->list), ptype);
-    spin_unlock_irqrestore(pmem_spinlock, flags);
-    pr_info("[CAM] %s: type %d, paddr 0x%lx, vaddr 0x%lx\n",
-		__func__, info->type, paddr, (unsigned long)info->vaddr);
 
 	return 0;
 }
 
 /* return of 0 means failure */
 static uint8_t msm_pmem_region_lookup(struct hlist_head *ptype,
-	int pmem_type, struct msm_pmem_region *reg, uint8_t maxcount,
-	spinlock_t *pmem_spinlock)
+	int pmem_type, struct msm_pmem_region *reg, uint8_t maxcount)
 {
 	struct msm_pmem_region *region;
 	struct msm_pmem_region *regptr;
 	struct hlist_node *node, *n;
-	unsigned long flags = 0;
 
 	uint8_t rc = 0;
 
 	regptr = reg;
-	spin_lock_irqsave(pmem_spinlock, flags);
+	mutex_lock(&hlist_mut);
 	hlist_for_each_entry_safe(region, node, n, ptype, list) {
-		if (region->info.type == pmem_type && region->info.active) {
-			*regptr = *region;
-			rc += 1;
-			if (rc >= maxcount)
-				break;
-			regptr++;
+		if (region->info.type == pmem_type &&
+			region->info.vfe_can_write) {
+				*regptr = *region;
+				rc += 1;
+				if (rc >= maxcount)
+					break;
+				regptr++;
 		}
 	}
-	spin_unlock_irqrestore(pmem_spinlock, flags);
-	return rc;
-}
-
-static uint8_t msm_pmem_region_lookup_2(struct hlist_head *ptype,
-										int pmem_type,
-										struct msm_pmem_region *reg,
-										uint8_t maxcount,
-										spinlock_t *pmem_spinlock)
-{
-	struct msm_pmem_region *region;
-	struct msm_pmem_region *regptr;
-	struct hlist_node *node, *n;
-	uint8_t rc = 0;
-	unsigned long flags = 0;
-	regptr = reg;
-	spin_lock_irqsave(pmem_spinlock, flags);
-	hlist_for_each_entry_safe(region, node, n, ptype, list) {
-		CDBG("[CAM] %s:info.type=%d, pmem_type = %d,"
-				"info.active = %d\n",
-				__func__, region->info.type, pmem_type, region->info.active);
-		if (region->info.type == pmem_type && region->info.active) {
-			pr_info("[CAM] info.type=%d, pmem_type = %d,"
-					"info.active = %d,\n",
-					region->info.type, pmem_type, region->info.active);
-			*regptr = *region;
-			region->info.type = MSM_PMEM_VIDEO;
-			rc += 1;
-			if (rc >= maxcount)
-				break;
-			regptr++;
-		}
-	}
-	spin_unlock_irqrestore(pmem_spinlock, flags);
+	mutex_unlock(&hlist_mut);
 	return rc;
 }
 
 static int msm_pmem_frame_ptov_lookup(struct msm_sync *sync,
-		unsigned long pyaddr,
-		unsigned long pcbcraddr,
-		struct msm_pmem_info *pmem_info,
-		int clear_active)
+		unsigned long pyaddr, unsigned long pcbcraddr,
+		struct msm_pmem_region **pmem_region,
+		int take_from_vfe)
 {
-	struct msm_pmem_region *region;
 	struct hlist_node *node, *n;
-	unsigned long flags = 0;
+	struct msm_pmem_region *region;
 
-	spin_lock_irqsave(&sync->pmem_frame_spinlock, flags);
 	hlist_for_each_entry_safe(region, node, n, &sync->pmem_frames, list) {
 		if (pyaddr == (region->paddr + region->info.y_off) &&
+#ifndef CONFIG_ARCH_MSM7225
 				pcbcraddr == (region->paddr +
 						region->info.cbcr_off) &&
-				region->info.active) {
-			/* offset since we could pass vaddr inside
-			 * a registerd pmem buffer
-			 */
-			memcpy(pmem_info, &region->info, sizeof(*pmem_info));
-			if (clear_active)
-				region->info.active = 0;
-			CDBG("[CAM] %s phy add found\n", __func__);
-			spin_unlock_irqrestore(&sync->pmem_frame_spinlock,
-				flags);
+#endif
+				region->info.vfe_can_write) {
+			*pmem_region = region;
+			region->info.vfe_can_write = !take_from_vfe;
+#ifdef CONFIG_ARCH_MSM7225
+			if (pcbcraddr != (region->paddr + region->info.cbcr_off)) {
+				pr_err("[CAM]%s cbcr addr = %lx, NOT EQUAL to region->paddr + region->info.cbcr_off = %lx\n",
+					__func__, pcbcraddr, region->paddr + region->info.cbcr_off);
+			}
+#endif
 			return 0;
 		}
 	}
-	/* After lookup failure, dump all the list entries... */
-	pr_err("[CAM] %s, for pyaddr 0x%lx, pcbcraddr 0x%lx\n",
-			__func__, pyaddr, pcbcraddr);
-	spin_unlock_irqrestore(&sync->pmem_frame_spinlock, flags);
+
 	return -EINVAL;
 }
 
@@ -424,36 +320,28 @@ static unsigned long msm_pmem_stats_ptov_lookup(struct msm_sync *sync,
 {
 	struct msm_pmem_region *region;
 	struct hlist_node *node, *n;
-	unsigned long flags = 0;
 
-	spin_lock_irqsave(&sync->pmem_stats_spinlock, flags);
 	hlist_for_each_entry_safe(region, node, n, &sync->pmem_stats, list) {
-		if (addr == region->paddr && region->info.active) {
+		if (addr == region->paddr && region->info.vfe_can_write) {
 			/* offset since we could pass vaddr inside a
 			 * registered pmem buffer */
 			*fd = region->info.fd;
-			region->info.active = 0;
-			spin_unlock_irqrestore(&sync->pmem_stats_spinlock,
-				flags);
+			region->info.vfe_can_write = 0;
 			return (unsigned long)(region->info.vaddr);
 		}
 	}
 #if 1
-	pr_err("[CAM] %s, for paddr 0x%lx\n",
-			__func__, addr);
-	/* HTC */
-	pr_err("[CAM]msm_pmem_stats_ptov_lookup: lookup vaddr..\n");
+	printk("[CAM]msm_pmem_stats_ptov_lookup: lookup vaddr..\n");
 	hlist_for_each_entry_safe(region, node, n, &sync->pmem_stats, list) {
 		if (addr == (unsigned long)(region->info.vaddr)) {
 			/* offset since we could pass vaddr inside a
 			 * registered pmem buffer */
 			*fd = region->info.fd;
-			region->info.active = 0;
+			region->info.vfe_can_write = 0;
 			return (unsigned long)(region->info.vaddr);
 		}
 	}
 #endif
-	spin_unlock_irqrestore(&sync->pmem_stats_spinlock, flags);
 	return 0;
 }
 
@@ -463,27 +351,19 @@ static unsigned long msm_pmem_frame_vtop_lookup(struct msm_sync *sync,
 {
 	struct msm_pmem_region *region;
 	struct hlist_node *node, *n;
-	unsigned long flags = 0;
 
-	spin_lock_irqsave(&sync->pmem_frame_spinlock, flags);
 	hlist_for_each_entry_safe(region,
 		node, n, &sync->pmem_frames, list) {
 		if (((unsigned long)(region->info.vaddr) == buffer) &&
 				(region->info.y_off == yoff) &&
 				(region->info.cbcr_off == cbcroff) &&
 				(region->info.fd == fd) &&
-				(region->info.active == 0)) {
-			region->info.active = 1;
-			spin_unlock_irqrestore(&sync->pmem_frame_spinlock,
-				flags);
+				(region->info.vfe_can_write == 0)) {
+			region->info.vfe_can_write = 1;
 			return region->paddr;
 		}
 	}
-	/* After lookup failure, dump all the list entries... */
-	pr_err("[CAM] %s, for vaddr 0x%lx, yoff %d cbcroff %d\n",
-			__func__, buffer, yoff, cbcroff);
 
-	spin_unlock_irqrestore(&sync->pmem_frame_spinlock, flags);
 	return 0;
 }
 
@@ -494,23 +374,16 @@ static unsigned long msm_pmem_stats_vtop_lookup(
 {
 	struct msm_pmem_region *region;
 	struct hlist_node *node, *n;
-	unsigned long flags = 0;
 
-	spin_lock_irqsave(&sync->pmem_stats_spinlock, flags);
 	hlist_for_each_entry_safe(region, node, n, &sync->pmem_stats, list) {
 		if (((unsigned long)(region->info.vaddr) == buffer) &&
 				(region->info.fd == fd) &&
-				region->info.active == 0) {
-			region->info.active = 1;
-			spin_unlock_irqrestore(&sync->pmem_stats_spinlock,
-				flags);
+				region->info.vfe_can_write == 0) {
+			region->info.vfe_can_write = 1;
 			return region->paddr;
 		}
 	}
-	/* After lookup failure, dump all the list entries... */
-	pr_err("[CAM] %s, for vaddr %ld\n",
-			__func__, buffer);
-	spin_unlock_irqrestore(&sync->pmem_stats_spinlock, flags);
+
 	return 0;
 }
 
@@ -520,14 +393,18 @@ static int __msm_pmem_table_del(struct msm_sync *sync,
 	int rc = 0;
 	struct msm_pmem_region *region;
 	struct hlist_node *node, *n;
-	unsigned long flags = 0;
 
 	switch (pinfo->type) {
+#ifndef CONFIG_720P_CAMERA
+	case MSM_PMEM_OUTPUT1:
+	case MSM_PMEM_OUTPUT2:
+#else
+	case MSM_PMEM_VIDEO:
 	case MSM_PMEM_PREVIEW:
+#endif
 	case MSM_PMEM_THUMBNAIL:
 	case MSM_PMEM_MAINIMG:
 	case MSM_PMEM_RAW_MAINIMG:
-		spin_lock_irqsave(&sync->pmem_frame_spinlock, flags);
 		hlist_for_each_entry_safe(region, node, n,
 			&sync->pmem_frames, list) {
 
@@ -538,43 +415,11 @@ static int __msm_pmem_table_del(struct msm_sync *sync,
 				put_pmem_file(region->file);
 				kfree(region);
 			}
-			else
-			{
-				CDBG("[CAM] %s, region(0x%x) not freed \n",
-						__func__, (int)region);
-			}
 		}
-		spin_unlock_irqrestore(&sync->pmem_frame_spinlock, flags);
-		break;
-	case MSM_PMEM_VIDEO:
-	case MSM_PMEM_VIDEO_VPE:
-
-		spin_lock_irqsave(&sync->pmem_frame_spinlock, flags);
-		hlist_for_each_entry_safe(region, node, n,
-			&sync->pmem_frames, list) {
-
-			if (((region->info.type == MSM_PMEM_VIDEO) ||
-				(region->info.type == MSM_PMEM_VIDEO_VPE)) &&
-				pinfo->vaddr == region->info.vaddr &&
-				pinfo->fd == region->info.fd) {
-				hlist_del(node);
-				put_pmem_file(region->file);
-				kfree(region);
-				CDBG("[CAM] %s: type %d, vaddr	0x%p\n",
-					__func__, pinfo->type, pinfo->vaddr);
-			}
-			else
-			{
-				CDBG("[CAM] %s, region(0x%x) not freed \n",
-						__func__, (int)region);
-			}
-		}
-		spin_unlock_irqrestore(&sync->pmem_frame_spinlock, flags);
 		break;
 
 	case MSM_PMEM_AEC_AWB:
 	case MSM_PMEM_AF:
-		spin_lock_irqsave(&sync->pmem_stats_spinlock, flags);
 		hlist_for_each_entry_safe(region, node, n,
 			&sync->pmem_stats, list) {
 
@@ -585,19 +430,11 @@ static int __msm_pmem_table_del(struct msm_sync *sync,
 				put_pmem_file(region->file);
 				kfree(region);
 			}
-			else
-			{
-				CDBG("[CAM] %s, region(0x%x) not freed \n",
-						__func__, (int)region);
-			}
 		}
-		spin_unlock_irqrestore(&sync->pmem_stats_spinlock, flags);
 		break;
 
 	default:
 		rc = -EINVAL;
-		pr_err("[CAM] %s, unhandled case %d \n",
-				__func__, pinfo->type);
 		break;
 	}
 
@@ -621,13 +458,14 @@ static int __msm_get_frame(struct msm_sync *sync,
 {
 	int rc = 0;
 
-	struct msm_pmem_info pmem_info;
+	struct msm_pmem_region *region;
 	struct msm_queue_cmd *qcmd = NULL;
 	struct msm_vfe_resp *vdata;
 	struct msm_vfe_phy_info *pphy;
 
-	if (&sync->frame_q)
+	if (&sync->frame_q) {
 		qcmd = msm_dequeue(&sync->frame_q, list_frame);
+	}
 
 	if (!qcmd) {
 		pr_err("[CAM]%s: no preview frame.\n", __func__);
@@ -640,13 +478,9 @@ static int __msm_get_frame(struct msm_sync *sync,
 	rc = msm_pmem_frame_ptov_lookup(sync,
 			pphy->y_phy,
 			pphy->cbcr_phy,
-			&pmem_info,
-			1); /* mark frame in use */
-	CDBG("[CAM] %s:  get frame, lookup address "
-			"y %x cbcr %x\n",
-			__func__,
-			pphy->y_phy,
-			pphy->cbcr_phy);
+			&region,
+			1); /* give frame to user space */
+
 	if (rc < 0) {
 		pr_err("[CAM]%s: cannot get frame, invalid lookup address "
 			"y %x cbcr %x\n",
@@ -656,13 +490,12 @@ static int __msm_get_frame(struct msm_sync *sync,
 		goto err;
 	}
 
-	frame->ts = qcmd->ts;
-	frame->buffer = (unsigned long)pmem_info.vaddr;
-	frame->y_off = pmem_info.y_off;
-	frame->cbcr_off = pmem_info.cbcr_off;
-	frame->fd = pmem_info.fd;
+	frame->buffer = (unsigned long)region->info.vaddr;
+	frame->y_off = region->info.y_off;
+	frame->cbcr_off = region->info.cbcr_off;
+	frame->fd = region->info.fd;
 	frame->path = vdata->phy.output_id;
-	CDBG("[CAM] %s: y %x, cbcr %x, qcmd %x, virt_addr %x\n",
+	CDBG("%s: y %x, cbcr %x, qcmd %x, virt_addr %x\n",
 		__func__,
 		pphy->y_phy, pphy->cbcr_phy, (int) qcmd, (int) frame->buffer);
 
@@ -686,9 +519,6 @@ static int msm_get_frame(struct msm_sync *sync, void __user *arg)
 	rc = __msm_get_frame(sync, &frame);
 	if (rc < 0)
 		return rc;
-
-	/* read the frame after the status has been read */
-	rmb();
 
 	if (sync->croplen) {
 		if (frame.croplen != sync->croplen) {
@@ -714,7 +544,7 @@ static int msm_get_frame(struct msm_sync *sync, void __user *arg)
 		rc = -EFAULT;
 	}
 
-	CDBG("[CAM] %s: got frame\n", __func__);
+	CDBG("%s: got frame\n", __func__);
 
 	return rc;
 }
@@ -734,7 +564,7 @@ static int msm_enable_vfe(struct msm_sync *sync, void __user *arg)
 	if (sync->vfefn.vfe_enable)
 		rc = sync->vfefn.vfe_enable(&cfg);
 
-	pr_info("[CAM] %s: rc %d\n", __func__, rc);
+	CDBG("%s: rc %d\n", __func__, rc);
 	return rc;
 }
 
@@ -753,7 +583,7 @@ static int msm_disable_vfe(struct msm_sync *sync, void __user *arg)
 	if (sync->vfefn.vfe_disable)
 		rc = sync->vfefn.vfe_disable(&cfg, NULL);
 
-	pr_info("[CAM] %s: rc %d\n", __func__, rc);
+	CDBG("%s: rc %d\n", __func__, rc);
 	return rc;
 }
 
@@ -763,14 +593,13 @@ static struct msm_queue_cmd *__msm_control(struct msm_sync *sync,
 		int timeout)
 {
 	int rc;
-	int loop = 0;
+
 	msm_enqueue(&sync->event_q, &qcmd->list_config);
 
 	if (!queue)
 		return NULL;
 
 	/* wait for config status */
-wait_event:
 	rc = wait_event_interruptible_timeout(
 			queue->wait,
 			!list_empty_careful(&queue->list),
@@ -778,14 +607,8 @@ wait_event:
 	if (list_empty_careful(&queue->list)) {
 		if (!rc)
 			rc = -ETIMEDOUT;
-		if (rc == -512 && loop < 20) {
-			loop++;
-			msleep(5);
-			pr_info("[CAM]%s: goto wait_event loop %d\n", __func__, loop);
-			goto wait_event;
-		} else if (rc < 0) {
+		if (rc < 0) {
 			pr_err("[CAM]%s: wait_event error %d\n", __func__, rc);
-			/* HTC */
 			/* qcmd may be still on the event_q, in which case we
 			 * need to remove it.  Alternatively, qcmd may have
 			 * been dequeued and processed already, in which case
@@ -830,7 +653,7 @@ static struct msm_queue_cmd *__msm_control_nb(struct msm_sync *sync,
 	udata->value = udata + 1;
 	memcpy(udata->value, udata_to_copy->value, udata_to_copy->length);
 
-	atomic_set(&qcmd->on_heap, 1);
+	qcmd->on_heap = 1;
 
 	/* qcmd_resp will be set to NULL */
 	return __msm_control(sync, NULL, qcmd, 0);
@@ -847,11 +670,7 @@ static int msm_control(struct msm_control_device *ctrl_pmsm,
 	struct msm_ctrl_cmd udata;
 	struct msm_queue_cmd qcmd;
 	struct msm_queue_cmd *qcmd_resp = NULL;
-#ifdef CONFIG_MACH_SAGA
-	uint8_t data[max_control_command_size];
-#else
 	uint8_t data[50];
-#endif
 
 	if (copy_from_user(&udata, arg, sizeof(struct msm_ctrl_cmd))) {
 		ERR_COPY_FROM_USER();
@@ -861,10 +680,8 @@ static int msm_control(struct msm_control_device *ctrl_pmsm,
 
 	uptr = udata.value;
 	udata.value = data;
-	if (udata.type == CAMERA_STOP_SNAPSHOT)
-		sync->get_pic_abort = 1;
 
-	atomic_set(&(qcmd.on_heap), 0);
+	qcmd.on_heap = 0;
 	qcmd.type = MSM_CAM_Q_CTRL;
 	qcmd.command = &udata;
 
@@ -889,7 +706,6 @@ static int msm_control(struct msm_control_device *ctrl_pmsm,
 		goto end;
 	}
 
-	msm_queue_drain(&ctrl_pmsm->ctrl_q, list_control);
 	qcmd_resp = __msm_control(sync,
 				  &ctrl_pmsm->ctrl_q,
 				  &qcmd, MAX_SCHEDULE_TIMEOUT);
@@ -931,7 +747,7 @@ static int msm_control(struct msm_control_device *ctrl_pmsm,
 
 end:
 	free_qcmd(qcmd_resp);
-	CDBG("[CAM] %s: rc %d\n", __func__, rc);
+	CDBG("%s: rc %d\n", __func__, rc);
 	return rc;
 }
 
@@ -942,7 +758,7 @@ static int msm_divert_frame(struct msm_sync *sync,
 		struct msm_vfe_resp *data,
 		struct msm_stats_event_ctrl *se)
 {
-	struct msm_pmem_info pinfo;
+	struct msm_pmem_region *region;
 	struct msm_postproc buf;
 	int rc;
 
@@ -957,20 +773,19 @@ static int msm_divert_frame(struct msm_sync *sync,
 	rc = msm_pmem_frame_ptov_lookup(sync,
 			data->phy.y_phy,
 			data->phy.cbcr_phy,
-			&pinfo,
-			0);  /* do clear the active flag */
+			&region,
+			0);  /* vfe can still write to frame */
 	if (rc < 0) {
-		pr_err("[CAM] %s: msm_pmem_frame_ptov_lookup failed\n", __func__);
+		CDBG("%s: msm_pmem_frame_ptov_lookup failed\n", __func__);
 		return rc;
 	}
 
-	memset(&(buf.fmain), 0, sizeof(struct msm_frame));
-	buf.fmain.buffer = (unsigned long)pinfo.vaddr;
-	buf.fmain.y_off = pinfo.y_off;
-	buf.fmain.cbcr_off = pinfo.cbcr_off;
-	buf.fmain.fd = pinfo.fd;
+	buf.fmain.buffer = (unsigned long)region->info.vaddr;
+	buf.fmain.y_off = region->info.y_off;
+	buf.fmain.cbcr_off = region->info.cbcr_off;
+	buf.fmain.fd = region->info.fd;
 
-	CDBG("[CAM] %s: buf %ld fd %d\n",
+	CDBG("%s: buf %ld fd %d\n",
 		__func__, buf.fmain.buffer,
 		buf.fmain.fd);
 	if (copy_to_user((void *)(se->stats_event.data),
@@ -990,7 +805,7 @@ static int msm_divert_snapshot(struct msm_sync *sync,
 	struct msm_postproc buf;
 	struct msm_pmem_region region;
 
-	CDBG("[CAM] %s: preview PP sync->pp_mask %d\n", __func__, sync->pp_mask);
+	CDBG("%s: preview PP sync->pp_mask %d\n", __func__, sync->pp_mask);
 
 	if (!(sync->pp_mask & (PP_SNAP|PP_RAW_SNAP))) {
 		pr_err("[CAM]%s: diverting snapshot but not in PP_SNAP!\n",
@@ -1001,7 +816,7 @@ static int msm_divert_snapshot(struct msm_sync *sync,
 	memset(&region, 0, sizeof(region));
 	buf.fmnum = msm_pmem_region_lookup(&sync->pmem_frames,
 					MSM_PMEM_MAINIMG,
-					&region, 1, &sync->pmem_frame_spinlock);
+					&region, 1);
 	if (buf.fmnum == 1) {
 		buf.fmain.buffer = (uint32_t)region.info.vaddr;
 		buf.fmain.y_off  = region.info.y_off;
@@ -1013,7 +828,7 @@ static int msm_divert_snapshot(struct msm_sync *sync,
 				__func__, buf.fmnum);
 		buf.fmnum = msm_pmem_region_lookup(&sync->pmem_frames,
 					MSM_PMEM_RAW_MAINIMG,
-					&region, 1, &sync->pmem_frame_spinlock);
+					&region, 1);
 		if (buf.fmnum == 1) {
 			buf.fmain.path = MSM_FRAME_PREV_2;
 			buf.fmain.buffer = (uint32_t)region.info.vaddr;
@@ -1025,7 +840,7 @@ static int msm_divert_snapshot(struct msm_sync *sync,
 		}
 	}
 
-	CDBG("[CAM] %s: snapshot copy_to_user!\n", __func__);
+	CDBG("%s: snapshot copy_to_user!\n", __func__);
 	if (copy_to_user((void *)(se->stats_event.data), &buf, sizeof(buf))) {
 		ERR_COPY_TO_USER();
 		return -EFAULT;
@@ -1049,13 +864,12 @@ static int msm_get_stats(struct msm_sync *sync, void __user *arg)
 	if (copy_from_user(&se, arg,
 			sizeof(struct msm_stats_event_ctrl))) {
 		ERR_COPY_FROM_USER();
-		pr_err("[CAM] %s, ERR_COPY_FROM_USER\n", __func__);
 		return -EFAULT;
 	}
 
 	timeout = (int)se.timeout_ms;
 
-	CDBG("[CAM] %s: timeout %d\n", __func__, timeout);
+	CDBG("%s: timeout %d\n", __func__, timeout);
 	rc = wait_event_interruptible_timeout(
 			sync->event_q.wait,
 			!list_empty_careful(&sync->event_q.list),
@@ -1064,15 +878,14 @@ static int msm_get_stats(struct msm_sync *sync, void __user *arg)
 		if (rc == 0)
 			rc = -ETIMEDOUT;
 		if (rc < 0) {
-			pr_err("[CAM]%s: error %d\n", __func__, rc);
+			pr_err("[CAM]\n%s: error %d\n", __func__, rc);
 			return rc;
 		}
 	}
-	CDBG("[CAM] %s: returned from wait: %d\n", __func__, rc);
+	CDBG("%s: returned from wait: %d\n", __func__, rc);
 
 	rc = 0;
 
-	memset(&stats, 0, sizeof(stats));
 	qcmd = msm_dequeue(&sync->event_q, list_config);
 	BUG_ON(!qcmd);
 
@@ -1083,10 +896,7 @@ static int msm_get_stats(struct msm_sync *sync, void __user *arg)
 		return rc;
 	}
 
-	CDBG("[CAM] %s: received from DSP %d\n", __func__, qcmd->type);
-
-	/* order the reads of stat/snapshot buffers */
-	rmb();
+	CDBG("%s: received from DSP %d\n", __func__, qcmd->type);
 
 	switch (qcmd->type) {
 	case MSM_CAM_Q_VFE_EVT:
@@ -1101,26 +911,22 @@ static int msm_get_stats(struct msm_sync *sync, void __user *arg)
 		se.stats_event.msg_id = data->evt_msg.msg_id;
 		se.stats_event.len    = data->evt_msg.len;
 
-		CDBG("[CAM] %s: qcmd->type %d length %d msd_id %d\n", __func__,
+		CDBG("%s: qcmd->type %d length %d msd_id %d\n", __func__,
 			qcmd->type,
 			se.stats_event.len,
 			se.stats_event.msg_id);
 
 		if ((data->type == VFE_MSG_STATS_AF) ||
-				(data->type == VFE_MSG_STATS_WE) ||
-				(data->type == VFE_MSG_STATS_AEC) ||
-				(data->type == VFE_MSG_STATS_IHIST) ||
-				(data->type == VFE_MSG_STATS_AWB)) {
+				(data->type == VFE_MSG_STATS_WE)) {
 
 			stats.buffer =
 			msm_pmem_stats_ptov_lookup(sync,
 					data->phy.sbuf_phy,
 					&(stats.fd));
 			if (!stats.buffer) {
-				pr_err("[CAM]%s: msm_pmem_stats_ptov_lookup error\n",
-					__func__);
+				pr_err("[CAM]%s: msm_pmem_stats_ptov_lookup error, addr = %x\n",
+					__func__,data->phy.sbuf_phy);
 #if 1
-				/* HTC */
 				se.resptype = MSM_CAM_RESP_MAX;
 #else
 				rc = -EINVAL;
@@ -1145,14 +951,26 @@ static int msm_get_stats(struct msm_sync *sync, void __user *arg)
 				goto failure;
 			}
 		} else {
+#ifndef CONFIG_720P_CAMERA
+			if ((sync->pp_mask & PP_PREV) &&
+					(data->type == VFE_MSG_OUTPUT1 ||
+					data->type == VFE_MSG_OUTPUT2))
+					rc = msm_divert_frame(sync, data, &se);
+			else if ((sync->pp_mask & (PP_SNAP|PP_RAW_SNAP)) &&
+				  data->type == VFE_MSG_SNAPSHOT)
+					rc = msm_divert_snapshot(sync,
+								data, &se);
+#else
 			if ((sync->pp_mask & PP_PREV) &&
 				(data->type == VFE_MSG_OUTPUT_P))
 					rc = msm_divert_frame(sync, data, &se);
 			else if ((sync->pp_mask & (PP_SNAP|PP_RAW_SNAP)) &&
 				  (data->type == VFE_MSG_SNAPSHOT ||
+				   data->type == VFE_MSG_OUTPUT_T ||
 				   data->type == VFE_MSG_OUTPUT_S))
 					rc = msm_divert_snapshot(sync,
 								data, &se);
+#endif
 		}
 		break;
 
@@ -1160,7 +978,7 @@ static int msm_get_stats(struct msm_sync *sync, void __user *arg)
 		/* control command from control thread */
 		ctrl = (struct msm_ctrl_cmd *)(qcmd->command);
 
-		CDBG("[CAM] %s: qcmd->type %d length %d\n", __func__,
+		CDBG("%s: qcmd->type %d length %d\n", __func__,
 			qcmd->type, ctrl->length);
 
 		if (ctrl->length > 0) {
@@ -1181,11 +999,12 @@ static int msm_get_stats(struct msm_sync *sync, void __user *arg)
 		se.ctrl_cmd.resp_fd = ctrl->resp_fd;
 		break;
 
+#ifdef CONFIG_MSM_CAMERA_V4L2
 	case MSM_CAM_Q_V4L2_REQ:
 		/* control command from v4l2 client */
 		ctrl = (struct msm_ctrl_cmd *)(qcmd->command);
 
-		CDBG("[CAM] %s: qcmd->type %d len %d\n", __func__, qcmd->type, ctrl->length);
+		CDBG("%s: qcmd->type %d len %d\n", __func__, qcmd->type, ctrl->length);
 
 		if (ctrl->length > 0) {
 			if (copy_to_user((void *)(se.ctrl_cmd.value),
@@ -1203,6 +1022,7 @@ static int msm_get_stats(struct msm_sync *sync, void __user *arg)
 		se.ctrl_cmd.type   = ctrl->type;
 		se.ctrl_cmd.length = ctrl->length;
 		break;
+#endif
 
 	default:
 		rc = -EFAULT;
@@ -1218,7 +1038,7 @@ static int msm_get_stats(struct msm_sync *sync, void __user *arg)
 failure:
 	free_qcmd(qcmd);
 
-	CDBG("[CAM] %s: %d\n", __func__, rc);
+	CDBG("%s: %d\n", __func__, rc);
 	return rc;
 }
 
@@ -1234,7 +1054,7 @@ static int msm_ctrl_cmd_done(struct msm_control_device *ctrl_pmsm,
 		return -EFAULT;
 	}
 
-	atomic_set(&qcmd->on_heap, 0);
+	qcmd->on_heap = 0;
 	qcmd->command = command;
 	uptr = command->value;
 
@@ -1255,30 +1075,12 @@ static int msm_ctrl_cmd_done(struct msm_control_device *ctrl_pmsm,
 	} else
 		command->value = NULL;
 
-	CDBG("[CAM] %s: end\n", __func__);
+	CDBG("%s: end\n", __func__);
 
 	/* wake up control thread */
 	msm_enqueue(&ctrl_pmsm->ctrl_q, &qcmd->list_control);
 
 	return 0;
-}
-
-static int msm_config_vpe(struct msm_sync *sync, void __user *arg)
-{
-	struct msm_vpe_cfg_cmd cfgcmd;
-	if (copy_from_user(&cfgcmd, arg, sizeof(cfgcmd))) {
-		ERR_COPY_FROM_USER();
-		return -EFAULT;
-	}
-	CDBG("[CAM] %s: cmd_type %d\n", __func__, cfgcmd.cmd_type);
-	switch (cfgcmd.cmd_type) {
-	case CMD_VPE:
-		return sync->vpefn.vpe_config(&cfgcmd, NULL);
-	default:
-		pr_err("[CAM]%s: unknown command type %d\n",
-				__func__, cfgcmd.cmd_type);
-	}
-	return -EINVAL;
 }
 
 static int msm_config_vfe(struct msm_sync *sync, void __user *arg)
@@ -1299,15 +1101,14 @@ static int msm_config_vfe(struct msm_sync *sync, void __user *arg)
 
 	memset(&axi_data, 0, sizeof(axi_data));
 
-	CDBG("[CAM] %s: cmd_type %d\n", __func__, cfgcmd.cmd_type);
+	CDBG("%s: cmd_type %d\n", __func__, cfgcmd.cmd_type);
 
 	switch (cfgcmd.cmd_type) {
 	case CMD_STATS_ENABLE:
 		axi_data.bufnum1 =
 			msm_pmem_region_lookup(&sync->pmem_stats,
 					MSM_PMEM_AEC_AWB, &region[0],
-					NUM_STAT_OUTPUT_BUFFERS,
-					&sync->pmem_stats_spinlock);
+					NUM_WB_EXP_STAT_OUTPUT_BUFFERS);
 
 	/* HTC: check axi_data.bufnum1 if out of bound of "region" array */
 	   if (!axi_data.bufnum1 || axi_data.bufnum1 >=
@@ -1320,8 +1121,7 @@ static int msm_config_vfe(struct msm_sync *sync, void __user *arg)
 		axi_data.bufnum2 =
 			msm_pmem_region_lookup(&sync->pmem_stats,
 					MSM_PMEM_AF, &region[axi_data.bufnum1],
-					NUM_STAT_OUTPUT_BUFFERS,
-					&sync->pmem_stats_spinlock);
+					NUM_AF_STAT_OUTPUT_BUFFERS);
 		if (!axi_data.bufnum1 || !axi_data.bufnum2) {
 			pr_err("[CAM]%s: pmem region lookup error\n", __func__);
 			return -EINVAL;
@@ -1332,47 +1132,7 @@ static int msm_config_vfe(struct msm_sync *sync, void __user *arg)
 		axi_data.bufnum1 =
 			msm_pmem_region_lookup(&sync->pmem_stats,
 					MSM_PMEM_AF, &region[0],
-					NUM_STAT_OUTPUT_BUFFERS,
-					&sync->pmem_stats_spinlock);
-		if (!axi_data.bufnum1) {
-			pr_err("[CAM]%s %d: pmem region lookup error\n",
-				__func__, __LINE__);
-			return -EINVAL;
-		}
-		axi_data.region = &region[0];
-		return sync->vfefn.vfe_config(&cfgcmd, &axi_data);
-	case CMD_STATS_AEC_AWB_ENABLE:
-		axi_data.bufnum1 =
-			msm_pmem_region_lookup(&sync->pmem_stats,
-			MSM_PMEM_AEC_AWB, &region[0],
-			NUM_STAT_OUTPUT_BUFFERS,
-			&sync->pmem_stats_spinlock);
-		if (!axi_data.bufnum1) {
-			pr_err("[CAM]%s %d: pmem region lookup error\n",
-				__func__, __LINE__);
-			return -EINVAL;
-		}
-		axi_data.region = &region[0];
-		return sync->vfefn.vfe_config(&cfgcmd, &axi_data);
-	case CMD_STATS_AEC_ENABLE:
-		axi_data.bufnum1 =
-			msm_pmem_region_lookup(&sync->pmem_stats,
-			MSM_PMEM_AEC, &region[0],
-			NUM_STAT_OUTPUT_BUFFERS,
-			&sync->pmem_stats_spinlock);
-		if (!axi_data.bufnum1) {
-			pr_err("[CAM]%s %d: pmem region lookup error\n",
-				__func__, __LINE__);
-			return -EINVAL;
-		}
-		axi_data.region = &region[0];
-		return sync->vfefn.vfe_config(&cfgcmd, &axi_data);
-	case CMD_STATS_AWB_ENABLE:
-		axi_data.bufnum1 =
-			msm_pmem_region_lookup(&sync->pmem_stats,
-			MSM_PMEM_AWB, &region[0],
-			NUM_STAT_OUTPUT_BUFFERS,
-			&sync->pmem_stats_spinlock);
+					NUM_AF_STAT_OUTPUT_BUFFERS);
 		if (!axi_data.bufnum1) {
 			pr_err("[CAM]%s %d: pmem region lookup error\n",
 				__func__, __LINE__);
@@ -1381,12 +1141,11 @@ static int msm_config_vfe(struct msm_sync *sync, void __user *arg)
 		axi_data.region = &region[0];
 		return sync->vfefn.vfe_config(&cfgcmd, &axi_data);
 
-	case CMD_STATS_IHIST_ENABLE:
+	case CMD_STATS_AEC_AWB_ENABLE:
 		axi_data.bufnum1 =
 			msm_pmem_region_lookup(&sync->pmem_stats,
-			MSM_PMEM_IHIST, &region[0],
-			NUM_STAT_OUTPUT_BUFFERS,
-			&sync->pmem_stats_spinlock);
+					MSM_PMEM_AEC_AWB, &region[0],
+					NUM_WB_EXP_STAT_OUTPUT_BUFFERS);
 		if (!axi_data.bufnum1) {
 			pr_err("[CAM]%s %d: pmem region lookup error\n",
 				__func__, __LINE__);
@@ -1394,9 +1153,6 @@ static int msm_config_vfe(struct msm_sync *sync, void __user *arg)
 		}
 		axi_data.region = &region[0];
 		return sync->vfefn.vfe_config(&cfgcmd, &axi_data);
-	case CMD_STATS_RS_ENABLE:
-	case CMD_STATS_CS_ENABLE:
-		return -EINVAL;
 	case CMD_GENERAL:
 	case CMD_STATS_DISABLE:
 		return sync->vfefn.vfe_config(&cfgcmd, NULL);
@@ -1406,49 +1162,6 @@ static int msm_config_vfe(struct msm_sync *sync, void __user *arg)
 	}
 
 	return -EINVAL;
-}
-
-static int msm_vpe_frame_cfg(struct msm_sync *sync,
-							void *cfgcmdin)
-{
-	int rc = -EIO;
-	struct axidata axi_data;
-	void *data = &axi_data;
-	struct msm_pmem_region region[8];
-	int pmem_type;
-
-	struct msm_vpe_cfg_cmd *cfgcmd;
-	cfgcmd = (struct msm_vpe_cfg_cmd *)cfgcmdin;
-
-	memset(&axi_data, 0, sizeof(axi_data));
-	pr_info("[CAM] In vpe_frame_cfg cfgcmd->cmd_type = %d \n",
-			cfgcmd->cmd_type);
-	switch (cfgcmd->cmd_type) {
-	case CMD_AXI_CFG_VPE:
-		pmem_type = MSM_PMEM_VIDEO_VPE;
-		axi_data.bufnum1 =
-			msm_pmem_region_lookup_2(&sync->pmem_frames, pmem_type,
-				&region[0], 8, &sync->pmem_frame_spinlock);
-		pr_info("[CAM] axi_data.bufnum1 = %d\n", axi_data.bufnum1);
-		if (!axi_data.bufnum1) {
-			pr_err("[CAM]%s %d: pmem region lookup error\n",
-					__func__, __LINE__);
-			return -EINVAL;
-		}
-		pmem_type = MSM_PMEM_VIDEO;
-		break;
-	default:
-		pr_err("[CAM]%s: unknown command type %d\n",
-				__func__, cfgcmd->cmd_type);
-		break;
-	}
-	axi_data.region = &region[0];
-	CDBG("[CAM] out vpe_frame_cfg cfgcmd->cmd_type = %d \n",
-		cfgcmd->cmd_type);
-	/* send the AXI configuration command to driver */
-	if (sync->vpefn.vpe_config)
-		rc = sync->vpefn.vpe_config(cfgcmd, data);
-	return rc;
 }
 
 static int msm_frame_axi_cfg(struct msm_sync *sync,
@@ -1464,11 +1177,62 @@ static int msm_frame_axi_cfg(struct msm_sync *sync,
 
 	switch (cfgcmd->cmd_type) {
 
+#ifndef CONFIG_720P_CAMERA
+	case CMD_AXI_CFG_OUT1:
+		pmem_type = MSM_PMEM_OUTPUT1;
+		axi_data.bufnum1 =
+			msm_pmem_region_lookup(&sync->pmem_frames, pmem_type,
+				&region[0], 8);
+		if (!axi_data.bufnum1) {
+			pr_err("[CAM]%s %d: pmem region lookup error\n",
+				__func__, __LINE__);
+			return -EINVAL;
+		}
+		break;
+
+	case CMD_AXI_CFG_OUT2:
+		pmem_type = MSM_PMEM_OUTPUT2;
+		axi_data.bufnum2 =
+			msm_pmem_region_lookup(&sync->pmem_frames, pmem_type,
+				&region[0], 8);
+		if (!axi_data.bufnum2) {
+			pr_err("[CAM]%s %d: pmem region lookup error (empty %d)\n",
+				__func__, __LINE__,
+				hlist_empty(&sync->pmem_frames));
+			return -EINVAL;
+		}
+		break;
+
+	case CMD_AXI_CFG_SNAP_O1_AND_O2:
+		pmem_type = MSM_PMEM_THUMBNAIL;
+		axi_data.bufnum1 =
+			msm_pmem_region_lookup(&sync->pmem_frames, pmem_type,
+				&region[0], 8);
+
+	/* HTC: check axi_data.bufnum1 if out of bound of "region" array */
+		if (!axi_data.bufnum1 || axi_data.bufnum1 >=
+			(sizeof(region)/sizeof(struct msm_pmem_region))) {
+		  pr_err("[CAM]%s %d: pmem region lookup error or out of bound\n",
+				__func__, __LINE__);
+		  return -EINVAL;
+		}
+
+		pmem_type = MSM_PMEM_MAINIMG;
+		axi_data.bufnum2 =
+			msm_pmem_region_lookup(&sync->pmem_frames, pmem_type,
+				&region[axi_data.bufnum1], 8);
+		if (!axi_data.bufnum2) {
+			pr_err("[CAM]%s %d: pmem region lookup error\n",
+				__func__, __LINE__);
+			return -EINVAL;
+		}
+		break;
+#else
 	case CMD_AXI_CFG_PREVIEW:
 		pmem_type = MSM_PMEM_PREVIEW;
 		axi_data.bufnum2 =
 			msm_pmem_region_lookup(&sync->pmem_frames, pmem_type,
-				&region[0], 8, &sync->pmem_frame_spinlock);
+				&region[0], 8);
 		if (!axi_data.bufnum2) {
 			pr_err("[CAM]%s %d: pmem region lookup error (empty %d)\n",
 				__func__, __LINE__,
@@ -1481,7 +1245,7 @@ static int msm_frame_axi_cfg(struct msm_sync *sync,
 		pmem_type = MSM_PMEM_PREVIEW;
 		axi_data.bufnum1 =
 			msm_pmem_region_lookup(&sync->pmem_frames, pmem_type,
-				&region[0], 8, &sync->pmem_frame_spinlock);
+				&region[0], 8);
 		if (!axi_data.bufnum1) {
 			pr_err("[CAM]%s %d: pmem region lookup error\n",
 				__func__, __LINE__);
@@ -1492,8 +1256,7 @@ static int msm_frame_axi_cfg(struct msm_sync *sync,
 		axi_data.bufnum2 =
 			msm_pmem_region_lookup(&sync->pmem_frames, pmem_type,
 				&region[axi_data.bufnum1],
-				(8-(axi_data.bufnum1)),
-				&sync->pmem_frame_spinlock);
+				(8-(axi_data.bufnum1)));
 		if (!axi_data.bufnum2) {
 			pr_err("[CAM]%s %d: pmem region lookup error\n",
 				__func__, __LINE__);
@@ -1501,14 +1264,12 @@ static int msm_frame_axi_cfg(struct msm_sync *sync,
 		}
 		break;
 
-#ifdef CONFIG_CAMERA_MULTISHOT
-	case CMD_AXI_CFG_MULTISHOT:
-#endif
+
 	case CMD_AXI_CFG_SNAP:
 		pmem_type = MSM_PMEM_THUMBNAIL;
 		axi_data.bufnum1 =
 			msm_pmem_region_lookup(&sync->pmem_frames, pmem_type,
-				&region[0], 8, &sync->pmem_frame_spinlock);
+				&region[0], 8);
 		if (!axi_data.bufnum1) {
 			pr_err("[CAM]%s %d: pmem region lookup error\n",
 				__func__, __LINE__);
@@ -1519,21 +1280,19 @@ static int msm_frame_axi_cfg(struct msm_sync *sync,
 		axi_data.bufnum2 =
 			msm_pmem_region_lookup(&sync->pmem_frames, pmem_type,
 				&region[axi_data.bufnum1],
-				(8-(axi_data.bufnum1)),
-				&sync->pmem_frame_spinlock);
+				(8-(axi_data.bufnum1)));
 		if (!axi_data.bufnum2) {
 			pr_err("[CAM]%s %d: pmem region lookup error\n",
 				__func__, __LINE__);
 			return -EINVAL;
 		}
-		pr_info("[CAM]%s config axi CMD_AXI_CFG_SNAP, bufnum1 %d bufnum2 %d\n", __func__, axi_data.bufnum1, axi_data.bufnum2);
 		break;
-
+#endif
 	case CMD_RAW_PICT_AXI_CFG:
 		pmem_type = MSM_PMEM_RAW_MAINIMG;
 		axi_data.bufnum2 =
 			msm_pmem_region_lookup(&sync->pmem_frames, pmem_type,
-				&region[0], 8, &sync->pmem_frame_spinlock);
+				&region[0], 8);
 		if (!axi_data.bufnum2) {
 			pr_err("[CAM]%s %d: pmem region lookup error\n",
 				__func__, __LINE__);
@@ -1554,6 +1313,7 @@ static int msm_frame_axi_cfg(struct msm_sync *sync,
 	axi_data.region = &region[0];
 
 	/* send the AXI configuration command to driver */
+
 	if (sync->vfefn.vfe_config)
 		rc = sync->vfefn.vfe_config(cfgcmd, data);
 
@@ -1574,17 +1334,11 @@ static int msm_get_sensor_info(struct msm_sync *sync, void __user *arg)
 	}
 
 	sdata = sync->pdev->dev.platform_data;
-	CDBG("[CAM] %s: sensor_name %s\n", __func__, sdata->sensor_name);
+	CDBG("%s: sensor_name %s\n", __func__, sdata->sensor_name);
 
 	memcpy(&info.name[0],
 		sdata->sensor_name,
 		MAX_SENSOR_NAME);
-	if (sdata->use_rawchip)
-		info.use_rawchip = sdata->use_rawchip;//HTC_START Simon 20120119
-	if (sdata->sensor_platform_info)
-		info.mirror_flip = sdata->sensor_platform_info->mirror_flip;//HTC_START Simon 20120203 - Sensor Orientation
-
-	CDBG("[CAM] sdata->use_rawchip = %d info.use_rawchip =%d", sdata->use_rawchip, info.use_rawchip);
 	info.flash_enabled = !!sdata->flash_cfg;
 
 	/* copy back to user space */
@@ -1611,13 +1365,14 @@ static int __msm_put_frame_buf(struct msm_sync *sync,
 		pb->y_off, pb->cbcr_off, pb->fd);
 
 	if (pphy != 0) {
-		CDBG("[CAM] %s: rel: vaddr %lx, paddr %lx\n",
+		CDBG("%s: rel: vaddr %lx, paddr %lx\n",
 			__func__,
 			pb->buffer, pphy);
 		cfgcmd.cmd_type = CMD_FRAME_BUF_RELEASE;
 		cfgcmd.value    = (void *)pb;
-		if (sync->vfefn.vfe_config)
+		if (sync->vfefn.vfe_config) {
 			rc = sync->vfefn.vfe_config(&cfgcmd, &pphy);
+    }
 	} else {
 		pr_err("[CAM]%s: msm_pmem_frame_vtop_lookup failed\n",
 			__func__);
@@ -1629,140 +1384,40 @@ static int __msm_put_frame_buf(struct msm_sync *sync,
 
 static int msm_put_frame_buffer(struct msm_sync *sync, void __user *arg)
 {
-	struct msm_frame buf_t;
+	struct msm_frame buf;
 
-	if (copy_from_user(&buf_t,
+	if (copy_from_user(&buf,
 				arg,
 				sizeof(struct msm_frame))) {
 		ERR_COPY_FROM_USER();
 		return -EFAULT;
 	}
 
-	return __msm_put_frame_buf(sync, &buf_t);
-}
-#ifdef CONFIG_CAMERA_MULTISHOT
-static int __msm_put_pic_buf(struct msm_sync *sync,
-		struct msm_frame *pb)
-{
-	unsigned long pphy;
-	struct msm_vfe_cfg_cmd cfgcmd;
-
-	int rc = -EIO;
-
-	CDBG("[CAM] %s: enter\n", __func__);
-	pphy = msm_pmem_frame_vtop_lookup(sync,
-		pb->buffer,
-		pb->y_off, pb->cbcr_off, pb->fd);
-
-	if (pphy != 0) {
-		CDBG("[CAM] %s: rel: vaddr %lx, paddr %lx\n",
-			__func__,
-			pb->buffer, pphy);
-		cfgcmd.cmd_type = CMD_SNAP_BUF_RELEASE;
-		cfgcmd.value    = (void *)pb;
-		if (sync->vfefn.vfe_config)
-			rc = sync->vfefn.vfe_config(&cfgcmd, &pphy);
-	} else {
-		pr_err("[CAM] %s: msm_pmem_frame_vtop_lookup failed\n",
-			__func__);
-		rc = -EINVAL;
-	}
-
-	return rc;
+	return __msm_put_frame_buf(sync, &buf);
 }
 
-/* bypass userspace frame thread, release picture buffer directly */
-static int __msm_put_pic_buf_bypass(struct msm_sync *sync,
-									struct msm_queue_cmd *qcmd)
-{
-	int rc = 0;
-	/* produce a dummy frame to release */
-	struct msm_frame dummy_frame;
-	struct msm_vfe_resp *vdata;
-	struct msm_vfe_phy_info *pphy;
-	struct msm_pmem_info pmem_info;
-
-	vdata = (struct msm_vfe_resp *)(qcmd->command);
-	pphy = &vdata->phy;
-
-	rc = msm_pmem_frame_ptov_lookup(sync,
-									pphy->y_phy,
-									pphy->cbcr_phy,
-									&pmem_info,
-									1); /* mark pic frame in use */
-
-	if (rc < 0) {
-		pr_err("[CAM] %s: cannot get pic frame, invalid lookup address "
-		       "y %x cbcr %x\n",
-		       __func__,
-		       pphy->y_phy,
-		       pphy->cbcr_phy);
-		goto err;
-	}
-
-	dummy_frame.ts = qcmd->ts;
-	dummy_frame.buffer = (unsigned long)pmem_info.vaddr;
-	dummy_frame.y_off = pmem_info.y_off;
-	dummy_frame.cbcr_off = pmem_info.cbcr_off;
-	dummy_frame.fd = pmem_info.fd;
-	dummy_frame.path = vdata->phy.output_id;
-	pr_info("[CAM] %s: y %x, cbcr %x, qcmd %x, virt_addr %x path %d\n",
-	       __func__,
-	       pphy->y_phy, pphy->cbcr_phy, (int) qcmd, (int) dummy_frame.buffer, dummy_frame.path);
-
-	/* release the dummy frame */
-	rc = __msm_put_pic_buf(sync, &dummy_frame);
-	if (rc < 0)
-		pr_err("[CAM] %s: cannot put pic frame, rc= %d", __func__, rc);
-
-err:
-	free_qcmd(qcmd);
-
-	return rc;
-}
-
-static int msm_put_pic_buffer(struct msm_sync *sync, void __user *arg)
-{
-	struct msm_frame buf_t;
-
-	CDBG("[CAM] %s: enter\n", __func__);
-	if (copy_from_user(&buf_t,
-				arg,
-				sizeof(struct msm_frame))) {
-		ERR_COPY_FROM_USER();
-		return -EFAULT;
-	}
-
-	return __msm_put_pic_buf(sync, &buf_t);
-}
-#endif
 static int __msm_register_pmem(struct msm_sync *sync,
 		struct msm_pmem_info *pinfo)
 {
 	int rc = 0;
 
 	switch (pinfo->type) {
+#ifndef CONFIG_720P_CAMERA
+	case MSM_PMEM_OUTPUT1:
+	case MSM_PMEM_OUTPUT2:
+#else
 	case MSM_PMEM_VIDEO:
 	case MSM_PMEM_PREVIEW:
+#endif
 	case MSM_PMEM_THUMBNAIL:
 	case MSM_PMEM_MAINIMG:
 	case MSM_PMEM_RAW_MAINIMG:
-	case MSM_PMEM_VIDEO_VPE:
-		rc = msm_pmem_table_add(&sync->pmem_frames, pinfo,
-			&sync->pmem_frame_spinlock);
+		rc = msm_pmem_table_add(&sync->pmem_frames, pinfo);
 		break;
 
 	case MSM_PMEM_AEC_AWB:
 	case MSM_PMEM_AF:
-	case MSM_PMEM_AEC:
-	case MSM_PMEM_AWB:
-	case MSM_PMEM_RS:
-	case MSM_PMEM_CS:
-	case MSM_PMEM_IHIST:
-	case MSM_PMEM_SKIN:
-
-		rc = msm_pmem_table_add(&sync->pmem_stats, pinfo,
-			&sync->pmem_stats_spinlock);
+		rc = msm_pmem_table_add(&sync->pmem_stats, pinfo);
 		break;
 
 	default:
@@ -1816,8 +1471,7 @@ static int msm_stats_axi_cfg(struct msm_sync *sync,
 	if (cfgcmd->cmd_type != CMD_GENERAL) {
 		axi_data.bufnum1 =
 			msm_pmem_region_lookup(&sync->pmem_stats, pmem_type,
-				&region[0], NUM_STAT_OUTPUT_BUFFERS,
-				&sync->pmem_stats_spinlock);
+				&region[0], NUM_WB_EXP_STAT_OUTPUT_BUFFERS);
 		if (!axi_data.bufnum1) {
 			pr_err("[CAM]%s %d: pmem region lookup error\n",
 				__func__, __LINE__);
@@ -1827,6 +1481,7 @@ static int msm_stats_axi_cfg(struct msm_sync *sync,
 	}
 
 	/* send the AEC/AWB STATS configuration command to driver */
+
 	if (sync->vfefn.vfe_config)
 		rc = sync->vfefn.vfe_config(cfgcmd, &axi_data);
 
@@ -1847,7 +1502,7 @@ static int msm_put_stats_buffer(struct msm_sync *sync, void __user *arg)
 		return -EFAULT;
 	}
 
-	CDBG("[CAM] %s\n", __func__);
+	CDBG("%s\n", __func__);
 	pphy = msm_pmem_stats_vtop_lookup(sync, buf.buffer, buf.fd);
 
 	if (pphy != 0) {
@@ -1855,12 +1510,6 @@ static int msm_put_stats_buffer(struct msm_sync *sync, void __user *arg)
 			cfgcmd.cmd_type = CMD_STATS_BUF_RELEASE;
 		else if (buf.type == STAT_AF)
 			cfgcmd.cmd_type = CMD_STATS_AF_BUF_RELEASE;
-		else if (buf.type == STAT_AEC)
-			cfgcmd.cmd_type = CMD_STATS_AEC_BUF_RELEASE;
-		else if (buf.type == STAT_AWB)
-			cfgcmd.cmd_type = CMD_STATS_AWB_BUF_RELEASE;
-		else if (buf.type == STAT_IHIST)
-			cfgcmd.cmd_type = CMD_STATS_IHIST_BUF_RELEASE;
 		else {
 			pr_err("[CAM]%s: invalid buf type %d\n",
 				__func__,
@@ -1870,7 +1519,6 @@ static int msm_put_stats_buffer(struct msm_sync *sync, void __user *arg)
 		}
 
 		cfgcmd.value = (void *)&buf;
-
 		if (sync->vfefn.vfe_config) {
 			rc = sync->vfefn.vfe_config(&cfgcmd, &pphy);
 			if (rc < 0)
@@ -1897,16 +1545,17 @@ static int msm_axi_config(struct msm_sync *sync, void __user *arg)
 	}
 
 	switch (cfgcmd.cmd_type) {
+#ifndef CONFIG_720P_CAMERA
+	case CMD_AXI_CFG_OUT1:
+	case CMD_AXI_CFG_OUT2:
+	case CMD_AXI_CFG_SNAP_O1_AND_O2:
+#else
 	case CMD_AXI_CFG_VIDEO:
 	case CMD_AXI_CFG_PREVIEW:
 	case CMD_AXI_CFG_SNAP:
-	case CMD_RAW_PICT_AXI_CFG:
-#ifdef CONFIG_CAMERA_MULTISHOT
-	case CMD_AXI_CFG_MULTISHOT:
 #endif
+	case CMD_RAW_PICT_AXI_CFG:
 		return msm_frame_axi_cfg(sync, &cfgcmd);
-	case CMD_AXI_CFG_VPE:
-		return msm_vpe_frame_cfg(sync, (void *)&cfgcmd);
 
 	case CMD_STATS_AXI_CFG:
 	case CMD_STATS_AF_AXI_CFG:
@@ -1921,110 +1570,7 @@ static int msm_axi_config(struct msm_sync *sync, void __user *arg)
 
 	return 0;
 }
-#ifdef CONFIG_CAMERA_MULTISHOT
-static int __msm_get_pic_multishot(struct msm_sync *sync,
-		struct msm_frame *frame)
-{
 
-	int rc = 0;
-	struct msm_queue_cmd *qcmd = NULL;
-	struct msm_vfe_resp *vdata;
-	struct msm_vfe_phy_info *pphy;
-	struct msm_pmem_info pmem_info;
-
-	CDBG("[CAM]%s: enter\n", __func__);
-
-	qcmd = msm_dequeue(&sync->pict_q, list_pict);
-
-	if (!qcmd) {
-		pr_err("[CAM] %s: no pic frame.\n", __func__);
-		return -EAGAIN;
-	}
-
-	vdata = (struct msm_vfe_resp *)(qcmd->command);
-	pphy = &vdata->phy;
-
-	rc = msm_pmem_frame_ptov_lookup(sync,
-			pphy->y_phy,
-			pphy->cbcr_phy,
-			&pmem_info,
-			1); /* mark pic frame in use */
-
-	if (rc < 0) {
-		pr_err("[CAM] %s: cannot get pic frame, invalid lookup address "
-			"y %x cbcr %x\n",
-			__func__,
-			pphy->y_phy,
-			pphy->cbcr_phy);
-		goto err;
-	}
-
-	frame->ts = qcmd->ts;
-	frame->buffer = (unsigned long)pmem_info.vaddr;
-	frame->phy_offset = pmem_info.offset;
-	frame->y_off = pmem_info.y_off;
-	frame->cbcr_off = pmem_info.cbcr_off;
-	frame->fd = pmem_info.fd;
-	frame->path = vdata->phy.output_id;
-	CDBG("[CAM] %s: y %x, cbcr %x, qcmd %x, virt_addr %x\n",
-		__func__,
-		pphy->y_phy, pphy->cbcr_phy, (int) qcmd, (int) frame->buffer);
-
-err:
-	free_qcmd(qcmd);
-
-	return rc;
-}
-
-static int msm_get_pic_multishot(struct msm_sync *sync, void __user *arg)
-{
-	int rc = 0;
-	struct msm_frame frame;
-
-	if (copy_from_user(&frame,
-				arg,
-				sizeof(struct msm_frame))) {
-		ERR_COPY_FROM_USER();
-		return -EFAULT;
-	}
-
-	rc = __msm_get_pic_multishot(sync, &frame);
-	if (rc < 0) {
-		pr_err("[CAM] %s, failed %d\n", __func__, rc);
-		return rc;
-	}
-	/* read the frame after the status has been read */
-	rmb();
-
-	if (sync->croplen) {
-		if (frame.croplen != sync->croplen) {
-			pr_err("[CAM] %s: invalid frame croplen %d,"
-				"expecting %d\n",
-				__func__,
-				frame.croplen,
-				sync->croplen);
-			return -EINVAL;
-		}
-
-		if (copy_to_user((void *)frame.cropinfo,
-				sync->cropinfo,
-				sync->croplen)) {
-			ERR_COPY_TO_USER();
-			return -EFAULT;
-		}
-	}
-	CDBG("[CAM] %s: copy snapshot frame to user\n", __func__);
-	if (copy_to_user((void *)arg,
-				&frame, sizeof(struct msm_frame))) {
-		ERR_COPY_TO_USER();
-		rc = -EFAULT;
-	}
-
-	CDBG("[CAM] %s: got pic frame\n", __func__);
-
-	return rc;
-}
-#endif
 static int __msm_get_pic(struct msm_sync *sync, struct msm_ctrl_cmd *ctrl)
 {
 	int rc = 0;
@@ -2036,14 +1582,8 @@ static int __msm_get_pic(struct msm_sync *sync, struct msm_ctrl_cmd *ctrl)
 
 	rc = wait_event_interruptible_timeout(
 			sync->pict_q.wait,
-			!list_empty_careful(
-				&sync->pict_q.list) || sync->get_pic_abort,
+			!list_empty_careful(&sync->pict_q.list),
 			msecs_to_jiffies(tm));
-
-	if (sync->get_pic_abort == 1) {
-		sync->get_pic_abort = 0;
-		return -ENODATA;
-	}
 	if (list_empty_careful(&sync->pict_q.list)) {
 		if (rc == 0)
 			return -ETIMEDOUT;
@@ -2082,34 +1622,32 @@ static int __msm_get_pic(struct msm_sync *sync, struct msm_ctrl_cmd *ctrl)
 
 static int msm_get_pic(struct msm_sync *sync, void __user *arg)
 {
-	struct msm_ctrl_cmd ctrlcmd_t;
+	struct msm_ctrl_cmd ctrlcmd;
 	struct msm_pmem_region pic_pmem_region;
 	int rc;
 	unsigned long end;
 	int cline_mask;
 
-	if (copy_from_user(&ctrlcmd_t,
+	if (copy_from_user(&ctrlcmd,
 				arg,
 				sizeof(struct msm_ctrl_cmd))) {
 		ERR_COPY_FROM_USER();
 		return -EFAULT;
 	}
 
-	rc = __msm_get_pic(sync, &ctrlcmd_t);
-	if (rc < 0) {
-		pr_err("[CAM] %s, failed %d\n", __func__, rc);
+	rc = __msm_get_pic(sync, &ctrlcmd);
+	if (rc < 0)
 		return rc;
-	}
 
 	if (sync->croplen) {
-		if (ctrlcmd_t.length != sync->croplen) {
+		if (ctrlcmd.length != sync->croplen) {
 			pr_err("[CAM]%s: invalid len %d < %d\n",
 				__func__,
-				ctrlcmd_t.length,
+				ctrlcmd.length,
 				sync->croplen);
 			return -EINVAL;
 		}
-		if (copy_to_user(ctrlcmd_t.value,
+		if (copy_to_user(ctrlcmd.value,
 				sync->cropinfo,
 				sync->croplen)) {
 			ERR_COPY_TO_USER();
@@ -2117,17 +1655,14 @@ static int msm_get_pic(struct msm_sync *sync, void __user *arg)
 		}
 	}
 
-	/* HTC */
 	if (msm_pmem_region_lookup(&sync->pmem_frames,
 			MSM_PMEM_MAINIMG,
-			&pic_pmem_region, 1,
-			&sync->pmem_frame_spinlock) == 0) {
+			&pic_pmem_region, 1) == 0) {
 		pr_err("[CAM]%s pmem region lookup error\n", __func__);
 		pr_info("[CAM]%s probably getting RAW\n", __func__);
 		if (msm_pmem_region_lookup(&sync->pmem_frames,
 				MSM_PMEM_RAW_MAINIMG,
-				&pic_pmem_region, 1,
-				&sync->pmem_frame_spinlock) == 0) {
+				&pic_pmem_region, 1) == 0) {
 			pr_err("[CAM]%s RAW pmem region lookup error\n", __func__);
 			return -EIO;
 		}
@@ -2141,14 +1676,14 @@ static int msm_get_pic(struct msm_sync *sync, void __user *arg)
 		__func__,
 		pic_pmem_region.kvaddr, end);
 
-	dmac_inv_range((const void *)pic_pmem_region.kvaddr,
-			(const void *)end);
+        /* HACK: Invalidate buffer */
+        dmac_unmap_area((void*)pic_pmem_region.kvaddr, pic_pmem_region.len,
+                        DMA_FROM_DEVICE);
+        pic_pmem_region.info.vfe_can_write = 0;
 
-	/* HTC end */
-
-	pr_info("[CAM] %s: copy snapshot frame to user\n", __func__);
+	CDBG("%s: copy snapshot frame to user\n", __func__);
 	if (copy_to_user((void *)arg,
-		&ctrlcmd_t,
+		&ctrlcmd,
 		sizeof(struct msm_ctrl_cmd))) {
 		ERR_COPY_TO_USER();
 		return -EFAULT;
@@ -2206,7 +1741,7 @@ static int msm_pp_grab(struct msm_sync *sync, void __user *arg)
 			return -EINVAL;
 		}
 
-		CDBG("[CAM] %s: sync->pp_mask %d enable %d\n", __func__,
+		CDBG("%s: sync->pp_mask %d enable %d\n", __func__,
 			sync->pp_mask, enable);
 		sync->pp_mask |= enable;
 	}
@@ -2223,90 +1758,45 @@ static int msm_pp_release(struct msm_sync *sync, void __user *arg)
 	}
 
 	mask &= PP_MASK;
-	if (!sync->pp_mask) {
+	if (!(sync->pp_mask & mask)) {
 		pr_warning("[CAM]%s: pp not in progress for %x\n", __func__,
 			mask);
 		return -EINVAL;
 	}
-	if (sync->pp_mask & PP_PREV) {
 
-		if (mask & PP_PREV) {
-			mutex_lock(&pp_prev_lock);
-			if (!sync->pp_prev) {
-				pr_err("[CAM]%s: no preview frame to deliver!\n",
-					__func__);
-				mutex_unlock(&pp_prev_lock);
-				return -EINVAL;
-			}
-			pr_info("[CAM]%s: delivering pp_prev\n", __func__);
-
-			msm_enqueue(&sync->frame_q, &sync->pp_prev->list_frame);
-			sync->pp_prev = NULL;
-			mutex_unlock(&pp_prev_lock);
-		} else if (!(mask & PP_PREV)) {
-			sync->pp_mask &= ~PP_PREV;
+	if ((mask & PP_PREV) && (sync->pp_mask & PP_PREV)) {
+		if (!sync->pp_prev) {
+			pr_err("[CAM]%s: no preview frame to deliver!\n", __func__);
+			return -EINVAL;
 		}
+		pr_info("[CAM]%s: delivering pp_prev\n", __func__);
+		msm_enqueue(&sync->frame_q, &sync->pp_prev->list_frame);
+		sync->pp_prev = NULL;
 		goto done;
 	}
 
 	if (((mask & PP_SNAP) && (sync->pp_mask & PP_SNAP)) ||
-		((mask & PP_RAW_SNAP) && (sync->pp_mask & PP_RAW_SNAP))) {
-		mutex_lock(&pp_snap_lock);
+			((mask & PP_RAW_SNAP) &&
+			 (sync->pp_mask & PP_RAW_SNAP))) {
 		if (!sync->pp_snap) {
 			pr_err("[CAM]%s: no snapshot to deliver!\n", __func__);
-			mutex_unlock(&pp_snap_lock);
 			return -EINVAL;
 		}
 		pr_info("[CAM]%s: delivering pp_snap\n", __func__);
 		msm_enqueue(&sync->pict_q, &sync->pp_snap->list_pict);
 		sync->pp_snap = NULL;
-		mutex_unlock(&pp_snap_lock);
-		sync->pp_mask &=
-			(mask & PP_SNAP) ? ~PP_SNAP : ~PP_RAW_SNAP;
 	}
 
 done:
+	sync->pp_mask = 0;
 	return 0;
 }
 
-#ifdef CONFIG_CAMERA_MULTISHOT
-static int msm_set_send_output_s(struct msm_sync *sync, void __user *arg)
-{
-	uint8_t enable;
-	if (copy_from_user(&enable, arg, sizeof(enable))) {
-		ERR_COPY_FROM_USER();
-		return -EFAULT;
-	} else {
-		atomic_set(&sync->send_output_s, enable);
-
-		/* reset num_drop_output_s when HDR is disabled */
-		if (!atomic_read(&sync->send_output_s)) {
-			atomic_set(&sync->num_drop_output_s, 0);
-			pr_info("[CAM] reset num_drop_output_s\n");
-		}
-	}
-    return 0;
-}
-
-/* set num of picture frames to drop */
-static int msm_set_drop_output_s(struct msm_sync *sync, void __user *arg)
-{
-	int num_drop_output_s;
-	if (copy_from_user(&num_drop_output_s, arg, sizeof(num_drop_output_s))) {
-		ERR_COPY_FROM_USER();
-		return -EFAULT;
-	} else {
-		atomic_set(&sync->num_drop_output_s, num_drop_output_s);
-	}
-	return 0;
-}
-#endif
-
-static long msm_ioctl_common(struct msm_cam_device *pmsm,
+static long msm_ioctl_common(struct msm_device *pmsm,
 		unsigned int cmd,
 		void __user *argp)
 {
-	CDBG("[CAM] %s\n", __func__);
+	CDBG("%s\n", __func__);
 	switch (cmd) {
 	case MSM_CAM_IOCTL_REGISTER_PMEM:
 		return msm_register_pmem(pmsm->sync, argp);
@@ -2319,8 +1809,9 @@ static long msm_ioctl_common(struct msm_cam_device *pmsm,
 
 int msm_camera_flash(struct msm_sync *sync, int level)
 {
-	int flash_level;
-	static int high_enabled;
+	int flash_level = 0;
+	uint8_t phy_flash = 0;
+	int ret = 0;
 
 	if (!sync->sdata->flash_cfg) {
 		pr_err("[CAM]%s: camera flash is not supported.\n", __func__);
@@ -2332,72 +1823,36 @@ int msm_camera_flash(struct msm_sync *sync, int level)
 		return -EINVAL;
 	}
 
+	sync->sdata->flash_cfg->postpone_led_mode = MSM_CAMERA_LED_OFF;
+
 	switch (level) {
+	case MSM_CAMERA_LED_LOW_FOR_SNAPSHOT:
+		/* postpone set led low*/
+		sync->sdata->flash_cfg->postpone_led_mode = MSM_CAMERA_LED_LOW;
+		phy_flash = 0;
+		break;
 	case MSM_CAMERA_LED_HIGH:
-		pr_info("[CAM]%s: camera flash level = MSM_CAMERA_LED_HIGH.(%d)\n", __func__, level);
-		/*flash_level = sync->sdata->flash_cfg->num_flash_levels - 1;*/
-		flash_level = FL_MODE_FLASH;
-		sync->sdata->led_high_enabled = 0; /* reset led high*/
-#ifdef CONFIG_FLASH_BACKLIGHT_OFF
-		led_brightness_switch("lcd-backlight", LED_OFF);
-		pr_info("[CAM] sleep 40ms for turn off backlight: E\n");
-		msleep(40);
-		pr_info("[CAM] sleep 40ms for turn off backlight: X\n");
-#endif
-		high_enabled = 1;
+		/* postpone set led high*/
+		sync->sdata->flash_cfg->postpone_led_mode = MSM_CAMERA_LED_HIGH;
+		phy_flash = 0;
 		break;
 	case MSM_CAMERA_LED_LOW:
-		pr_info("[CAM]%s: camera flash level = MSM_CAMERA_LED_LOW.(%d)\n", __func__, level);
-		/*flash_level = sync->sdata->flash_cfg->num_flash_levels / 2;*/
-		flash_level = FL_MODE_PRE_FLASH;
-		sync->sdata->led_high_enabled = 1; /* set led high*/
-		high_enabled = 0;
+		flash_level = sync->sdata->flash_cfg->num_flash_levels / 2;
+		phy_flash = 1;
 		break;
 	case MSM_CAMERA_LED_OFF:
-		pr_info("[CAM]%s: camera flash level = MSM_CAMERA_LED_OFF.(%d)\n", __func__, level);
 		flash_level = 0;
-#ifdef CONFIG_FLASH_BACKLIGHT_OFF
-		{
-		int rc = sync->sdata->flash_cfg->camera_flash(flash_level);
-		if (high_enabled == 1)
-			led_brightness_switch("lcd-backlight", LED_FULL);
-
-		high_enabled = 0;
-
-		return rc;
-		}
-#else
+		phy_flash = 1;
 		break;
-#endif
-//HTC_START_Simon.Ti_Liu_20120209 linear led
-	case FL_MODE_TORCH_LEVEL_1:
-		pr_info("[CAM]%s: camera flash level = FL_MODE_TORCH_LEVEL_1.(%d) \n", __func__, level);
-	case FL_MODE_TORCH_LEVEL_2:
-		pr_info("[CAM]%s: camera flash level = FL_MODE_TORCH_LEVEL_2.(%d) \n", __func__, level);
-	case FL_MODE_FLASH_LEVEL1:
-		pr_info("[CAM]%s: camera flash level = FL_MODE_FLASH_LEVEL1.(%d) \n", __func__, level);
-	case FL_MODE_FLASH_LEVEL2:
-		pr_info("[CAM]%s: camera flash level = FL_MODE_FLASH_LEVEL2.(%d) \n", __func__, level);
-	case FL_MODE_FLASH_LEVEL3:
-		pr_info("[CAM]%s: camera flash level = FL_MODE_FLASH_LEVEL3.(%d) \n", __func__, level);
-	case FL_MODE_FLASH_LEVEL4:
-		pr_info("[CAM]%s: camera flash level = FL_MODE_FLASH_LEVEL4.(%d) \n", __func__, level);
-	case FL_MODE_FLASH_LEVEL5:
-		pr_info("[CAM]%s: camera flash level = FL_MODE_FLASH_LEVEL5.(%d) \n", __func__, level);
-	case FL_MODE_FLASH_LEVEL6:
-		pr_info("[CAM]%s: camera flash level = FL_MODE_FLASH_LEVEL6.(%d) \n", __func__, level);
-	case FL_MODE_FLASH_LEVEL7:
-		pr_info("[CAM]%s: camera flash level = FL_MODE_FLASH_LEVEL7.(%d) \n", __func__, level);
-		flash_level = level;
-		pr_info("[CAM]%s: flash_level = %d", __func__, flash_level);
-		break;
-//HTC_END
-
 	default:
 		pr_err("[CAM]%s: invalid flash level %d.\n", __func__, level);
 		return -EINVAL;
 	}
-	return sync->sdata->flash_cfg->camera_flash(flash_level);
+
+	if (phy_flash)
+		ret = sync->sdata->flash_cfg->camera_flash(flash_level);
+
+	return ret;
 }
 
 static long msm_ioctl_config(struct file *filep, unsigned int cmd,
@@ -2405,19 +1860,9 @@ static long msm_ioctl_config(struct file *filep, unsigned int cmd,
 {
 	int rc = -EINVAL;
 	void __user *argp = (void __user *)arg;
-	struct msm_cam_device *pmsm = filep->private_data;
+	struct msm_device *pmsm = filep->private_data;
 
-#ifdef CONFIG_RAWCHIP
-	struct sensor_cfg_data cdata;
-	/* extern Yushan_New_Context_Config_t sYushanVideoContextConfig;*/
-/* sungfeng: remove later
-	extern Yushan_New_Context_Config_t	sYushanFullContextConfig;
-	extern Yushan_New_Context_Config_t sYushanVideoFastContextConfig;
-	extern Yushan_New_Context_Config_t sYushanQTRContextConfig;
-*/
-	extern void frame_counter(void);
-#endif
-	CDBG("[CAM] %s: cmd %d\n", __func__, _IOC_NR(cmd));
+	CDBG("%s: cmd %d\n", __func__, _IOC_NR(cmd));
 
 	switch (cmd) {
 	case MSM_CAM_IOCTL_GET_SENSOR_INFO:
@@ -2427,11 +1872,6 @@ static long msm_ioctl_config(struct file *filep, unsigned int cmd,
 	case MSM_CAM_IOCTL_CONFIG_VFE:
 		/* Coming from config thread for update */
 		rc = msm_config_vfe(pmsm->sync, argp);
-		break;
-
-	case MSM_CAM_IOCTL_CONFIG_VPE:
-		/* Coming from config thread for update */
-		rc = msm_config_vpe(pmsm->sync, argp);
 		break;
 
 	case MSM_CAM_IOCTL_GET_STATS:
@@ -2462,7 +1902,6 @@ static long msm_ioctl_config(struct file *filep, unsigned int cmd,
 		break;
 
 	case MSM_CAM_IOCTL_AXI_CONFIG:
-	case MSM_CAM_IOCTL_AXI_VPE_CONFIG:
 		rc = msm_axi_config(pmsm->sync, argp);
 		break;
 
@@ -2470,14 +1909,14 @@ static long msm_ioctl_config(struct file *filep, unsigned int cmd,
 		rc = msm_set_crop(pmsm->sync, argp);
 		break;
 
-	case MSM_CAM_IOCTL_PICT_PP:
+	case MSM_CAM_IOCTL_PP:
 		/* Grab one preview frame or one snapshot
 		 * frame.
 		 */
 		rc = msm_pp_grab(pmsm->sync, argp);
 		break;
 
-	case MSM_CAM_IOCTL_PICT_PP_DONE:
+	case MSM_CAM_IOCTL_PP_DONE:
 		/* Release the preview of snapshot frame
 		 * that was grabbed.
 		 */
@@ -2485,28 +1924,6 @@ static long msm_ioctl_config(struct file *filep, unsigned int cmd,
 		break;
 
 	case MSM_CAM_IOCTL_SENSOR_IO_CFG:
-#ifdef CONFIG_RAWCHIP
-	if (copy_from_user(&cdata, (void *)argp, sizeof(struct sensor_cfg_data)))
-		return -EFAULT;
-/* sungfeng: remove later
-	if ((cdata.cfgtype == CFG_SET_MODE) && (cdata.mode == SENSOR_PREVIEW_MODE) && (cdata.rs == 0)) {
-		if (Yushan_init == 1) {
-			pr_info("[CAM]config QTR resolution in msm_ioctl_config..\n");
-			Yushan_ContextUpdate_Wrapper(&sYushanQTRContextConfig);
-		}
-	} else if ((cdata.cfgtype == CFG_SET_MODE) && (cdata.mode == SENSOR_PREVIEW_MODE) && (cdata.rs == 1)) {
-		if (Yushan_init == 1) {
-			pr_info("[CAM]config full size resolution in msm_ioctl_config..\n");
-			Yushan_ContextUpdate_Wrapper(&sYushanFullContextConfig);
-		}
-	} else if ((cdata.cfgtype == CFG_SET_MODE) && (cdata.mode == SENSOR_PREVIEW_MODE) && (cdata.rs == 4 || cdata.rs == 5 )) {
-		if (Yushan_init == 1) {
-			pr_info("<ChenC>config video fast resolution in msm_ioctl_config..\n");
-			Yushan_ContextUpdate_Wrapper(&sYushanVideoFastContextConfig);
-		}
-	}
-*/
-#endif
 		rc = pmsm->sync->sctrl.s_config(argp);
 		break;
 
@@ -2515,28 +1932,26 @@ static long msm_ioctl_config(struct file *filep, unsigned int cmd,
 		if (copy_from_user(&led_state, argp, sizeof(led_state))) {
 			ERR_COPY_FROM_USER();
 			rc = -EFAULT;
-		} else{
+		} else
 			rc = msm_camera_flash(pmsm->sync, led_state);
+		break;
 		}
-		break;
+	case MSM_CAM_IOCTL_ENABLE_OUTPUT_IND: {
+		uint32_t enable;
+		if (copy_from_user(&enable, argp, sizeof(enable))) {
+			ERR_COPY_FROM_USER();
+			rc = -EFAULT;
+			break;
+		}
+		pmsm->sync->report_preview_to_config = enable;
 	}
-
-#ifdef CONFIG_CAMERA_MULTISHOT
-	case MSM_CAM_IOCTL_SEND_OUTPUT_S:
-		rc = msm_set_send_output_s(pmsm->sync, argp);
-		break;
-
-	case MSM_CAM_IOCTL_DROP_OUTPUT_S:
-		rc = msm_set_drop_output_s(pmsm->sync, argp);
-		break;
-#endif
 
 	default:
 		rc = msm_ioctl_common(pmsm, cmd, argp);
 		break;
 	}
 
-	CDBG("[CAM] %s: cmd %d DONE\n", __func__, _IOC_NR(cmd));
+	CDBG("%s: cmd %d DONE\n", __func__, _IOC_NR(cmd));
 	return rc;
 }
 
@@ -2547,8 +1962,7 @@ static long msm_ioctl_frame(struct file *filep, unsigned int cmd,
 {
 	int rc = -EINVAL;
 	void __user *argp = (void __user *)arg;
-	struct msm_cam_device *pmsm = filep->private_data;
-
+	struct msm_device *pmsm = filep->private_data;
 
 	switch (cmd) {
 	case MSM_CAM_IOCTL_GETFRAME:
@@ -2569,33 +1983,6 @@ static long msm_ioctl_frame(struct file *filep, unsigned int cmd,
 	return rc;
 }
 
-#ifdef CONFIG_CAMERA_MULTISHOT
-static int msm_unblock_poll_pic(struct msm_sync *);
-static long msm_ioctl_pic(struct file *filep, unsigned int cmd,
-	unsigned long arg)
-{
-	int rc = -EINVAL;
-	void __user *argp = (void __user *)arg;
-	struct msm_cam_device *pmsm = filep->private_data;
-
-
-	switch (cmd) {
-	case MSM_CAM_IOCTL_GET_PICTURE:
-		rc = msm_get_pic_multishot(pmsm->sync, argp);
-		break;
-	case MSM_CAM_IOCTL_RELEASE_PIC_BUFFER:
-		rc = msm_put_pic_buffer(pmsm->sync, argp);
-		break;
-	case MSM_CAM_IOCTL_UNBLOCK_POLL_PIC_FRAME:
-		rc = msm_unblock_poll_pic(pmsm->sync);
-		break;
-	default:
-		break;
-	}
-
-	return rc;
-}
-#endif
 
 static long msm_ioctl_control(struct file *filep, unsigned int cmd,
 	unsigned long arg)
@@ -2603,15 +1990,13 @@ static long msm_ioctl_control(struct file *filep, unsigned int cmd,
 	int rc = -EINVAL;
 	void __user *argp = (void __user *)arg;
 	struct msm_control_device *ctrl_pmsm = filep->private_data;
-	struct msm_cam_device *pmsm = ctrl_pmsm->pmsm;
+	struct msm_device *pmsm = ctrl_pmsm->pmsm;
 
 	switch (cmd) {
 	case MSM_CAM_IOCTL_CTRL_COMMAND:
 		/* Coming from control thread, may need to wait for
 		 * command status */
-		mutex_lock(&ctrl_cmd_lock);
 		rc = msm_control(ctrl_pmsm, 1, argp);
-		mutex_unlock(&ctrl_cmd_lock);
 		break;
 	case MSM_CAM_IOCTL_CTRL_COMMAND_2:
 		/* Sends a message, returns immediately */
@@ -2626,7 +2011,6 @@ static long msm_ioctl_control(struct file *filep, unsigned int cmd,
 	case MSM_CAM_IOCTL_GET_PICTURE:
 		rc = msm_get_pic(pmsm->sync, argp);
 		break;
-
 	case MSM_CAM_IOCTL_GET_SENSOR_INFO:
 		rc = msm_get_sensor_info(pmsm->sync, argp);
 		break;
@@ -2634,8 +2018,6 @@ static long msm_ioctl_control(struct file *filep, unsigned int cmd,
 		rc = msm_ioctl_common(pmsm, cmd, argp);
 		break;
 	}
-
-	if (rc) pr_err("[CAM]%s: rc = %d\n", __func__, rc);
 
 	return rc;
 }
@@ -2668,36 +2050,38 @@ static int __msm_release(struct msm_sync *sync)
 		msm_show_time();
 
 		/* need to clean up system resource */
-		pr_info("[CAM] %s, vfe_release\n", __func__);
 		if (sync->vfefn.vfe_release)
 			sync->vfefn.vfe_release(sync->pdev);
-
-#ifdef CONFIG_RAWCHIP
-		rawchip_release();
-#endif
 
 		kfree(sync->cropinfo);
 		sync->cropinfo = NULL;
 		sync->croplen = 0;
-		pr_info("[CAM] %s, free frame pmem region\n", __func__);
+
+		/*sensor release moved to vfe_release*/
+
 		hlist_for_each_entry_safe(region, hnode, n,
 				&sync->pmem_frames, list) {
 			hlist_del(hnode);
 			put_pmem_file(region->file);
 			kfree(region);
 		}
-		pr_info("[CAM] %s, free stats pmem region\n", __func__);
+
 		hlist_for_each_entry_safe(region, hnode, n,
 				&sync->pmem_stats, list) {
 			hlist_del(hnode);
 			put_pmem_file(region->file);
 			kfree(region);
 		}
+
+		msm_queue_drain(&sync->event_q, list_config);
+		msm_queue_drain(&sync->frame_q, list_frame);
 		msm_queue_drain(&sync->pict_q, list_pict);
 
-		pm_qos_update_request(&sync->idle_pm_qos, PM_QOS_DEFAULT_VALUE);
+		wake_unlock(&sync->wake_suspend_lock);
+		wake_unlock(&sync->wake_lock);
+
 		sync->apps_id = NULL;
-		pr_info("[CAM] %s: completed\n", __func__);
+		CDBG("%s: completed\n", __func__);
 	}
 	mutex_unlock(&sync->lock);
 
@@ -2707,19 +2091,13 @@ static int __msm_release(struct msm_sync *sync)
 static int msm_release_config(struct inode *node, struct file *filep)
 {
 	int rc;
-	struct msm_cam_device *pmsm = filep->private_data;
+	struct msm_device *pmsm = filep->private_data;
 	pr_info("[CAM]%s: %s\n", __func__, filep->f_path.dentry->d_name.name);
 	rc = __msm_release(pmsm->sync);
 	if (!rc) {
 		pr_info("[CAM]release config atomic_set pmsm->opened as 0\n");
-		if ((&pmsm->sync->event_q) != 0) {
-			msm_queue_drain(&pmsm->sync->event_q, list_config);
-			atomic_set(&pmsm->opened, 0);
-		} else {
-			pr_err("[CAM]%s  fatal error : &pmsm->sync->event_q is 0 !!!\n", __func__);
-		}
+		atomic_set(&pmsm->opened, 0);
 	}
-	pr_info("[CAM] %s, completed\n", __func__);
 	return rc;
 }
 
@@ -2727,63 +2105,33 @@ static int msm_release_control(struct inode *node, struct file *filep)
 {
 	int rc;
 	struct msm_control_device *ctrl_pmsm = filep->private_data;
-	struct msm_cam_device *pmsm = ctrl_pmsm->pmsm;
+	struct msm_device *pmsm = ctrl_pmsm->pmsm;
 	pr_info("[CAM]%s: %s\n", __func__, filep->f_path.dentry->d_name.name);
-	g_v4l2_opencnt--;
 	rc = __msm_release(pmsm->sync);
 	if (!rc) {
 		msm_queue_drain(&ctrl_pmsm->ctrl_q, list_control);
 		kfree(ctrl_pmsm);
 	}
-		pr_info("[CAM] %s, completed\n", __func__);
 	return rc;
 }
 
 static int msm_release_frame(struct inode *node, struct file *filep)
 {
 	int rc;
-	struct msm_cam_device *pmsm = filep->private_data;
+	struct msm_device *pmsm = filep->private_data;
 	pr_info("[CAM]%s: %s\n", __func__, filep->f_path.dentry->d_name.name);
 	rc = __msm_release(pmsm->sync);
 	if (!rc) {
 		pr_info("[CAM]release frame atomic_set pmsm->opened as 0\n");
-		msm_queue_drain(&pmsm->sync->frame_q, list_frame);
-		atomic_set(&pmsm->opened, 0);
-	}
-	pr_info("[CAM] %s, completed\n", __func__);
-	return rc;
-}
-
-#ifdef CONFIG_CAMERA_MULTISHOT
-static int msm_release_pic(struct inode *node, struct file *filep)
-{
-	int rc;
-	struct msm_cam_device *pmsm = filep->private_data;
-	pr_info("[CAM] %s: %s\n", __func__, filep->f_path.dentry->d_name.name);
-	rc = __msm_release(pmsm->sync);
-	if (!rc) {
-		msm_queue_drain(&pmsm->sync->pict_q, list_pict);
 		atomic_set(&pmsm->opened, 0);
 	}
 	return rc;
 }
-
-static int msm_unblock_poll_pic(struct msm_sync *sync)
-{
-	unsigned long flags;
-	CDBG("[CAM] %s\n", __func__);
-	spin_lock_irqsave(&sync->pict_q.lock, flags);
-	sync->unblock_poll_pic_frame = 1;
-	wake_up(&sync->pict_q.wait);
-	spin_unlock_irqrestore(&sync->pict_q.lock, flags);
-	return 0;
-}
-#endif
 
 static int msm_unblock_poll_frame(struct msm_sync *sync)
 {
 	unsigned long flags;
-	CDBG("[CAM] %s\n", __func__);
+	CDBG("%s\n", __func__);
 	spin_lock_irqsave(&sync->frame_q.lock, flags);
 	sync->unblock_poll_frame = 1;
 	wake_up(&sync->frame_q.wait);
@@ -2805,7 +2153,7 @@ static unsigned int __msm_poll_frame(struct msm_sync *sync,
 		/* frame ready */
 		rc = POLLIN | POLLRDNORM;
 	if (sync->unblock_poll_frame) {
-		CDBG("[CAM] %s: sync->unblock_poll_frame is true\n", __func__);
+		CDBG("%s: sync->unblock_poll_frame is true\n", __func__);
 		rc |= POLLPRI;
 		sync->unblock_poll_frame = 0;
 	}
@@ -2817,47 +2165,9 @@ static unsigned int __msm_poll_frame(struct msm_sync *sync,
 static unsigned int msm_poll_frame(struct file *filep,
 	struct poll_table_struct *pll_table)
 {
-	struct msm_cam_device *pmsm = filep->private_data;
+	struct msm_device *pmsm = filep->private_data;
 	return __msm_poll_frame(pmsm->sync, filep, pll_table);
 }
-
-#ifdef CONFIG_CAMERA_MULTISHOT
-static unsigned int __msm_poll_pic(struct msm_sync *sync,
-		struct file *filep,
-		struct poll_table_struct *pll_table)
-{
-	int rc = 0;
-	unsigned long flags;
-
-	poll_wait(filep, &sync->pict_q.wait , pll_table);
-	spin_lock_irqsave(&sync->abort_pict_lock, flags);
-	if (sync->get_pic_abort == 1) {
-		/* TODO: need to pass an error case */
-		sync->get_pic_abort = 0;
-	}
-	spin_unlock_irqrestore(&sync->abort_pict_lock, flags);
-
-	spin_lock_irqsave(&sync->pict_q.lock, flags);
-	if (!list_empty_careful(&sync->pict_q.list))
-		/* frame ready */
-		rc = POLLIN | POLLRDNORM;
-	if (sync->unblock_poll_pic_frame) {
-		pr_info("[CAM] %s: sync->unblock_poll_pic_frame is true\n", __func__);
-		rc |= POLLPRI;
-		sync->unblock_poll_pic_frame = 0;
-	}
-	spin_unlock_irqrestore(&sync->pict_q.lock, flags);
-
-	return rc;
-}
-
-static unsigned int msm_poll_pic(struct file *filep,
-	struct poll_table_struct *pll_table)
-{
-	struct msm_cam_device *pmsm = filep->private_data;
-	return __msm_poll_pic(pmsm->sync, filep, pll_table);
-}
-#endif
 
 /*
  * This function executes in interrupt context.
@@ -2873,20 +2183,7 @@ static void *msm_vfe_sync_alloc(int size,
 		/* Becker and kant */
 		memset(qcmd, 0x0, sizeof(struct msm_queue_cmd) + size);
 
-		atomic_set(&qcmd->on_heap, 1);
-		return qcmd + 1;
-	}
-	return NULL;
-}
-
-static void *msm_vpe_sync_alloc(int size,
-								void *syncdata __attribute__((unused)),
-								gfp_t gfp)
-{
-	struct msm_queue_cmd *qcmd =
-		kmalloc(sizeof(struct msm_queue_cmd) + size, gfp);
-	if (qcmd) {
-		atomic_set(&qcmd->on_heap, 1);
+		qcmd->on_heap = 1;
 		return qcmd + 1;
 	}
 	return NULL;
@@ -2898,18 +2195,7 @@ static void msm_vfe_sync_free(void *ptr)
 		struct msm_queue_cmd *qcmd =
 			(struct msm_queue_cmd *)ptr;
 		qcmd--;
-		if (atomic_read(&qcmd->on_heap))
-			kfree(qcmd);
-	}
-}
-
-static void msm_vpe_sync_free(void *ptr)
-{
-	if (ptr) {
-		struct msm_queue_cmd *qcmd =
-			(struct msm_queue_cmd *)ptr;
-		qcmd--;
-		if (atomic_read(&qcmd->on_heap))
+		if (qcmd->on_heap)
 			kfree(qcmd);
 	}
 }
@@ -2929,9 +2215,9 @@ static void msm_vfe_sync(struct msm_vfe_resp *vdata,
 		pr_err("[CAM]%s: no context in dsp callback.\n", __func__);
 		return;
 	}
-    /* HTC */
+
 	if (!sync->opencnt) {
-		pr_info("[CAM]%s: SPURIOUS INTERRUPT\n", __func__);
+		pr_err("[CAM]%s: SPURIOUS INTERRUPT\n", __func__);
 		return;
 	}
 
@@ -2939,234 +2225,95 @@ static void msm_vfe_sync(struct msm_vfe_resp *vdata,
 	qcmd->type = qtype;
 	qcmd->command = vdata;
 
-	ktime_get_ts(&(qcmd->ts));
+	CDBG("%s: qtype %d \n", __func__, qtype);
+	CDBG("%s: evt_msg.msg_id %d\n", __func__, vdata->evt_msg.msg_id);
+	CDBG("%s: evt_msg.exttype %d\n", __func__, vdata->evt_msg.exttype);
+	if (sync->sdata->flash_cfg) {
+		if (qtype == MSM_CAM_Q_VFE_MSG &&
+			vdata->evt_msg.exttype == VFE_MSG_SNAPSHOT) {
+#if defined(CONFIG_ARCH_MSM_ARM11)
+			if (vdata->evt_msg.msg_id == 4)
+			/* QDSP_VFETASK_MSG_VFE_START_ACK */
+#elif defined(CONFIG_ARCH_QSD8X50)
+			if (vdata->evt_msg.msg_id == 1)
+			/* VFE_MSG_ID_START_ACK */
+#endif
+			{
+				pr_info("[CAM]flashlight: postpone_led_mode %d\n",
+					sync->sdata->flash_cfg->postpone_led_mode);
+				sync->sdata->flash_cfg->camera_flash(
+					sync->sdata->flash_cfg->postpone_led_mode);
+			}
+		}
+	}
 
 	if (qtype != MSM_CAM_Q_VFE_MSG)
-		goto vfe_for_config;
-
-	CDBG("[CAM] %s: vdata->type %d\n", __func__, vdata->type);
-		switch (vdata->type) {
-		case VFE_MSG_OUTPUT_P:
-			if (sync->pp_mask & PP_PREV) {
-				CDBG("[CAM] %s: PP_PREV in progress: phy_y %x phy_cbcr %x\n",
-					__func__,
-					vdata->phy.y_phy,
-					vdata->phy.cbcr_phy);
-				mutex_lock(&pp_prev_lock);
-				if (sync->pp_prev)
-					pr_warning("[CAM]%s: overwriting pp_prev!\n",
-						__func__);
-				pr_info("[CAM]%s: sending preview to config\n", __func__);
-				sync->pp_prev = qcmd;
-				mutex_unlock(&pp_prev_lock);
-				break;
-			}
-			CDBG("[CAM] %s: msm_enqueue frame_q\n", __func__);
-			msm_enqueue(&sync->frame_q, &qcmd->list_frame);
-				if (atomic_read(&qcmd->on_heap))
-					atomic_add(1, &qcmd->on_heap);
-			break;
-
-		case VFE_MSG_OUTPUT_T:
-#ifdef CONFIG_CAMERA_MULTISHOT
-			CDBG("[CAM] DROP has_dropped_output_s %d\n", atomic_read(&sync->has_dropped_output_s));
-			if (atomic_read(&sync->has_dropped_output_s) == 0)
-				msm_enqueue(&sync->pict_q, &qcmd->list_pict);
-			else
-				/* the snapshot frame coupled with this thumbnail frame was dropped.
-				 * drop this thumbnail frame as well */
-				__msm_put_pic_buf_bypass(sync, qcmd);
+		goto for_config;
+	
+	CDBG("%s: vdata->type %d\n", __func__, vdata->type);
+	switch (vdata->type) {
+#ifndef CONFIG_720P_CAMERA
+	case VFE_MSG_OUTPUT1:
+	case VFE_MSG_OUTPUT2:
 #else
-			/* this is for normal snapshot case. right now we only have
-			single shot. still keeping the old way. therefore no need
-			to send anything to user.*/
-			if (atomic_read(&qcmd->on_heap))
-				free_qcmd(qcmd);
+	case VFE_MSG_OUTPUT_P:
 #endif
-			return;
 
-		case VFE_MSG_OUTPUT_S:
-			if (sync->pp_mask & PP_SNAP) {
-				mutex_lock(&pp_snap_lock);
-				if (!sync->pp_snap) {
-					CDBG("[CAM] %s: pp sending main image to config\n",
-						__func__);
-					sync->pp_snap = qcmd;
-					mutex_unlock(&pp_snap_lock);
-					if (atomic_read(&qcmd->on_heap))
-						atomic_add(1, &qcmd->on_heap);
-				}
-				mutex_unlock(&pp_snap_lock);
-				break;
-			} else {
-#ifdef CONFIG_CAMERA_MULTISHOT
-				/*
-				 *	sync->num_drop_output_s -
-				 *		=  0 : enqueue frame
-				 *		>  0 : drop frame count
-				 *		= -1 : drop all frames
-				 */
-				if (atomic_read(&sync->num_drop_output_s) == 0) {/* got frames */
-					CDBG("[CAM] NO_DROP %d\n", atomic_read(&sync->num_drop_output_s));
-					msm_enqueue(&sync->pict_q, &qcmd->list_pict);
-
-					atomic_set(&sync->has_dropped_output_s, 0);
-
-					if (atomic_read(&sync->send_output_s)) {
-						atomic_sub(1, &sync->num_drop_output_s); /* no drop -> drop all */
-
-						if (atomic_read(&qcmd->on_heap))
-							atomic_add(1, &qcmd->on_heap);
-						break;
-					}
-				} else { /* num_drop_output_s > 0 OR num_drop_output_s == -1, drop frames */
-					pr_info("[CAM] DROP %d\n", atomic_read(&sync->num_drop_output_s));
-					atomic_set(&sync->has_dropped_output_s, 1);
-					if (atomic_read(&sync->num_drop_output_s) > 0)
-						atomic_sub(1, &sync->num_drop_output_s);
-
-					/* bypass userspace frame thread, release picture buffer directly */
-					__msm_put_pic_buf_bypass(sync, qcmd);
-				}
-#else
-				/* this is for normal snapshot case. right now we only have
-				  single shot. still keeping the old way. therefore no need
-				  to send anything to user.*/
-				if (atomic_read(&qcmd->on_heap))
-					free_qcmd(qcmd);
-#endif
-				return;
-			}
-
-		case VFE_MSG_OUTPUT_V:
-			/* pr_info("[CAM] dis_en = %d \n", *sync->vpefn.dis); */
-			if (*(sync->vpefn.dis)) {
-				if (sync->cropinfo != NULL)
-					vdata->vpe_bf.vpe_crop =
-						*(struct video_crop_t *)(sync->cropinfo);
-				memset(&(vdata->vpe_bf), 0, sizeof(vdata->vpe_bf));
-				vdata->vpe_bf.y_phy = vdata->phy.y_phy;
-				vdata->vpe_bf.cbcr_phy = vdata->phy.cbcr_phy;
-				vdata->vpe_bf.ts = (qcmd->ts);
-				vdata->vpe_bf.frame_id = vdata->phy.frame_id;
-				qcmd->command = vdata;
-				msm_enqueue_vpe(&sync->vpe_q, &qcmd->list_vpe_frame);
-				return;
-			} else {
-				if (sync->vpefn.vpe_cfg_update(sync->cropinfo)) {
-					CDBG("[CAM] %s: msm_enqueue video frame to vpe "
-						"time = %ld\n",
-						__func__, qcmd->ts.tv_nsec);
-					sync->vpefn.send_frame_to_vpe(
-						vdata->phy.y_phy,
-						vdata->phy.cbcr_phy,
-						&(qcmd->ts));
-					kfree(qcmd);
-					return;
-				} else {
-					CDBG("[CAM] %s: msm_enqueue video frame_q\n",
-						__func__);
-					msm_enqueue(&sync->frame_q, &qcmd->list_frame);
-
-					if (atomic_read(&qcmd->on_heap))
-						atomic_add(1, &qcmd->on_heap);
-					break;
-				}
-			}
-
-		case VFE_MSG_SNAPSHOT:
-			if (sync->pp_mask & (PP_SNAP | PP_RAW_SNAP)) {
-				CDBG("[CAM] %s: PP_SNAP in progress: pp_mask %x\n",
-					__func__, sync->pp_mask);
-				mutex_lock(&pp_snap_lock);
-				if (sync->pp_snap)
-					pr_warning("[CAM]%s: overwriting pp_snap!\n",
-						__func__);
-				pr_info("[CAM]%s: sending snapshot to config\n",
+		if (sync->pp_mask & PP_PREV) {
+			CDBG("%s: PP_PREV in progress: phy_y %x phy_cbcr %x\n",
+				__func__,
+				vdata->phy.y_phy,
+				vdata->phy.cbcr_phy);
+			if (sync->pp_prev)
+				pr_warning("[CAM]%s: overwriting pp_prev!\n",
 					__func__);
-				sync->pp_snap = qcmd;
-				mutex_unlock(&pp_snap_lock);
+			pr_info("[CAM]%s: sending preview to config\n", __func__);
+			sync->pp_prev = qcmd;
+			if (qcmd->on_heap)
+				qcmd->on_heap++;
 				break;
 			}
-#ifndef CONFIG_CAMERA_MULTISHOT
-			msm_enqueue(&sync->pict_q, &qcmd->list_pict);
-			if (atomic_read(&qcmd->on_heap))
-				atomic_add(1, &qcmd->on_heap);
+		CDBG("%s: msm_enqueue frame_q\n", __func__);
+		if (qcmd->on_heap)
+			qcmd->on_heap++;
+		msm_enqueue(&sync->frame_q, &qcmd->list_frame);
+		break;
+
+#ifdef CONFIG_720P_CAMERA
+		case VFE_MSG_OUTPUT_V:
+			if (qcmd->on_heap)
+				qcmd->on_heap++;
+		CDBG("%s: msm_enqueue video frame_q\n", __func__);
+		msm_enqueue(&sync->frame_q, &qcmd->list_frame);
+		break;
 #endif
-			break;
 
-		case VFE_MSG_STATS_AWB:
-			CDBG("[CAM] %s: qtype %d, AWB stats, enqueue event_q.\n",
-			     __func__, vdata->type);
-			break;
-
-		case VFE_MSG_STATS_AEC:
-			CDBG("[CAM] %s: qtype %d, AEC stats, enqueue event_q.\n",
-			     __func__, vdata->type);
-			break;
-
-		case VFE_MSG_STATS_IHIST:
-			CDBG("[CAM] %s: qtype %d, ihist stats, enqueue event_q.\n",
-			     __func__, vdata->type);
-			break;
-
-		case VFE_MSG_GENERAL:
-			CDBG("[CAM] %s: qtype %d, general msg, enqueue event_q.\n",
-			    __func__, vdata->type);
-			break;
+	case VFE_MSG_SNAPSHOT:
+		if (sync->pp_mask & (PP_SNAP | PP_RAW_SNAP)) {
+			CDBG("%s: PP_SNAP in progress: pp_mask %x\n",
+				__func__, sync->pp_mask);
+			if (sync->pp_snap)
+				pr_warning("[CAM]%s: overwriting pp_snap!\n",
+					__func__);
+			pr_info("[CAM]%s: sending snapshot to config\n", __func__);
+			sync->pp_snap = qcmd;
+			if (qcmd->on_heap)
+				qcmd->on_heap++;
+				break;
+		}
+		if (qcmd->on_heap)
+			qcmd->on_heap++;
+		msm_enqueue(&sync->pict_q, &qcmd->list_pict);
+		break;
 
 		default:
-			CDBG("[CAM] %s: qtype %d not handled\n", __func__, vdata->type);
-			/* fall through, send to config. */
-	}
-
-vfe_for_config:
-	CDBG("[CAM] %s: msm_enqueue event_q\n", __func__);
-	msm_enqueue(&sync->event_q, &qcmd->list_config);
-}
-
-static void msm_vpe_sync(struct msm_vpe_resp *vdata,
-						enum msm_queue qtype,
-						void *syncdata,
-						void *ts, gfp_t gfp)
-{
-	struct msm_queue_cmd *qcmd = NULL;
-	struct msm_sync *sync = (struct msm_sync *)syncdata;
-	if (!sync) {
-		pr_err("[CAM]%s: no context in dsp callback.\n", __func__);
-		return;
-	}
-
-	qcmd = ((struct msm_queue_cmd *)vdata) - 1;
-	qcmd->type = qtype;
-	qcmd->command = vdata;
-	qcmd->ts = *((struct timespec *)ts);
-
-	if (qtype != MSM_CAM_Q_VPE_MSG)
-		goto vpe_for_config;
-
-	CDBG("[CAM] %s: vdata->type %d\n", __func__, vdata->type);
-	switch (vdata->type) {
-	case VPE_MSG_OUTPUT_V:
-		CDBG("[CAM] %s: msm_enqueue video frame_q from VPE \n", __func__);
-			msm_enqueue(&sync->frame_q, &qcmd->list_frame);
-		if (atomic_read(&qcmd->on_heap))
-			atomic_add(1, &qcmd->on_heap);
-		break;
-	default:
-		CDBG("[CAM] %s: qtype %d not handled\n", __func__, vdata->type);
+		CDBG("%s: qtype %d not handled\n", __func__, vdata->type);
 		/* fall through, send to config. */
 	}
-vpe_for_config:
-	CDBG("[CAM] %s: msm_enqueue event_q\n", __func__);
+
+for_config:
 	msm_enqueue(&sync->event_q, &qcmd->list_config);
 }
-
-static struct msm_vpe_callback msm_vpe_s = {
-       .vpe_resp = msm_vpe_sync,
-       .vpe_alloc = msm_vpe_sync_alloc,
-       .vpe_free = msm_vpe_sync_free,
-};
 
 static struct msm_vfe_callback msm_vfe_s = {
 	.vfe_resp = msm_vfe_sync,
@@ -3179,8 +2326,7 @@ static int __msm_open(struct msm_sync *sync, const char *const apps_id)
 	int rc = 0;
 
 	mutex_lock(&sync->lock);
-	if (sync->apps_id && strcmp(sync->apps_id, apps_id)
-				&& (!strcmp(MSM_APPS_ID_V4L2, apps_id))) {
+	if (sync->apps_id && strcmp(sync->apps_id, apps_id)) {
 		pr_err("[CAM]%s(%s): sensor %s is already opened for %s\n",
 			__func__,
 			apps_id,
@@ -3189,19 +2335,15 @@ static int __msm_open(struct msm_sync *sync, const char *const apps_id)
 		rc = -EBUSY;
 		goto msm_open_done;
 	}
+
 	sync->apps_id = apps_id;
 
 	if (!sync->opencnt) {
-		pm_qos_update_request(&sync->idle_pm_qos,
-				PM_QOS_CPU_DMA_LATENCY);
-
-		atomic_set(&sync->send_output_s, 0);
-		atomic_set(&sync->num_drop_output_s, 0);
-		pr_info("[CAM] reset num_drop_output_s and send_output_s\n");
+		wake_lock(&sync->wake_suspend_lock);
+		wake_lock(&sync->wake_lock);
 
 		msm_camvfe_fn_init(&sync->vfefn, sync);
 		if (sync->vfefn.vfe_init) {
-			sync->get_pic_abort = 0;
 			rc = sync->vfefn.vfe_init(&msm_vfe_s,
 				sync->pdev);
 			if (rc < 0) {
@@ -3209,17 +2351,10 @@ static int __msm_open(struct msm_sync *sync, const char *const apps_id)
 					__func__, rc);
 				goto msm_open_done;
 			}
-#ifdef CONFIG_RAWCHIP
-			Yushan_init = 0;
-			/* afsu_info.active_number = 0;*/
-			pr_info("[CAM] __msm_open:Yushan_common_init \n");
-			rawchip_open_init();
-#endif
 			rc = sync->sctrl.s_init(sync->sdata);
 			if (rc < 0) {
 				pr_err("[CAM]%s: sensor init failed: %d\n",
 					__func__, rc);
-				/* HTC */
 				sync->vfefn.vfe_release(sync->pdev);
 				goto msm_open_done;
 			}
@@ -3228,18 +2363,11 @@ static int __msm_open(struct msm_sync *sync, const char *const apps_id)
 			rc = -ENODEV;
 			goto msm_open_done;
 		}
-		msm_camvpe_fn_init(&sync->vpefn, sync);
-
-		spin_lock_init(&sync->abort_pict_lock);
 
 		if (rc >= 0) {
-			msm_region_init(sync);
-			if (sync->vpefn.vpe_reg)
-				sync->vpefn.vpe_reg(&msm_vpe_s);
+			INIT_HLIST_HEAD(&sync->pmem_frames);
+			INIT_HLIST_HEAD(&sync->pmem_stats);
 			sync->unblock_poll_frame = 0;
-#ifdef CONFIG_CAMERA_MULTISHOT
-			sync->unblock_poll_pic_frame = 0;
-#endif
 		}
 	}
 	sync->opencnt++;
@@ -3253,8 +2381,8 @@ static int msm_open_common(struct inode *inode, struct file *filep,
 			   int once)
 {
 	int rc;
-	struct msm_cam_device *pmsm =
-		container_of(inode->i_cdev, struct msm_cam_device, cdev);
+	struct msm_device *pmsm =
+		container_of(inode->i_cdev, struct msm_device, cdev);
 
 	pr_info("[CAM]%s: open %s\n", __func__, filep->f_path.dentry->d_name.name);
 
@@ -3277,9 +2405,11 @@ static int msm_open_common(struct inode *inode, struct file *filep,
 
 	filep->private_data = pmsm;
 
-	pr_info("[CAM] %s: rc %d\n", __func__, rc);
+	CDBG("%s: rc %d\n", __func__, rc);
 	return rc;
 }
+
+
 
 static int msm_open(struct inode *inode, struct file *filep)
 {
@@ -3304,18 +2434,13 @@ static int msm_open_control(struct inode *inode, struct file *filep)
 
 	ctrl_pmsm->pmsm = filep->private_data;
 	filep->private_data = ctrl_pmsm;
-
 	msm_queue_init(&ctrl_pmsm->ctrl_q, "control");
 
-	if (!g_v4l2_opencnt)
-		g_v4l2_control_device = ctrl_pmsm;
-
-	g_v4l2_opencnt++;
-
-	pr_info("[CAM] %s: rc %d\n", __func__, rc);
+	CDBG("%s: rc %d\n", __func__, rc);
 	return rc;
 }
 
+#ifdef CONFIG_MSM_CAMERA_V4L2
 static int __msm_v4l2_control(struct msm_sync *sync,
 		struct msm_ctrl_cmd *out)
 {
@@ -3323,7 +2448,7 @@ static int __msm_v4l2_control(struct msm_sync *sync,
 
 	struct msm_queue_cmd *qcmd = NULL, *rcmd = NULL;
 	struct msm_ctrl_cmd *ctrl;
-	struct msm_device_queue *v4l2_ctrl_q = &g_v4l2_control_device->ctrl_q;
+	struct msm_device_queue FIXME;
 
 	/* wake up config thread, 4 is for V4L2 application */
 	qcmd = kzalloc(sizeof(struct msm_queue_cmd), GFP_KERNEL);
@@ -3334,17 +2459,9 @@ static int __msm_v4l2_control(struct msm_sync *sync,
 	}
 	qcmd->type = MSM_CAM_Q_V4L2_REQ;
 	qcmd->command = out;
-	atomic_set(&qcmd->on_heap, 1);
+	qcmd->on_heap = 1;
 
-	if (out->type == V4L2_CAMERA_EXIT) {
-		rcmd = __msm_control(sync, NULL, qcmd, out->timeout_ms);
-		if (rcmd == NULL) {
-			rc = PTR_ERR(rcmd);
-			goto end;
-		}
-	}
-
-	rcmd = __msm_control(sync, v4l2_ctrl_q, qcmd, out->timeout_ms);
+	rcmd = __msm_control(sync, &FIXME, qcmd, out->timeout_ms);
 	if (IS_ERR(rcmd)) {
 		rc = PTR_ERR(rcmd);
 		goto end;
@@ -3357,9 +2474,10 @@ static int __msm_v4l2_control(struct msm_sync *sync,
 
 end:
 	free_qcmd(rcmd);
-	CDBG("[CAM] %s: rc %d\n", __func__, rc);
+	CDBG("%s: rc %d\n", __func__, rc);
 	return rc;
 }
+#endif
 
 static const struct file_operations msm_fops_config = {
 	.owner = THIS_MODULE,
@@ -3383,17 +2501,7 @@ static const struct file_operations msm_fops_frame = {
 	.poll = msm_poll_frame,
 };
 
-#ifdef CONFIG_CAMERA_MULTISHOT
-static const struct file_operations msm_fops_pic = {
-	.owner = THIS_MODULE,
-	.open = msm_open,
-	.unlocked_ioctl = msm_ioctl_pic,
-	.release = msm_release_pic,
-	.poll = msm_poll_pic,
-};
-#endif
-
-static int msm_setup_cdev(struct msm_cam_device *msm,
+static int msm_setup_cdev(struct msm_device *msm,
 			int node,
 			dev_t devno,
 			const char *suffix,
@@ -3425,7 +2533,7 @@ static int msm_setup_cdev(struct msm_cam_device *msm,
 	return rc;
 }
 
-static int msm_tear_down_cdev(struct msm_cam_device *msm, dev_t devno)
+static int msm_tear_down_cdev(struct msm_device *msm, dev_t devno)
 {
 	cdev_del(&msm->cdev);
 	device_destroy(msm_class, devno);
@@ -3438,62 +2546,6 @@ static uint32_t led_hotspot_status_value;
 static uint16_t led_low_temp_limit;
 static uint16_t led_low_cap_limit;
 static struct kobject *led_status_obj;
-static struct camera_flash_info *p_flash_led_info;
-//HTC_START_Simon.Ti_Liu_20120209 linear led
-static ssize_t flash_led_info_get(struct device *dev,
-				struct device_attribute *attr, char *buf)
-{
-	ssize_t length = 0;
-
-	if (p_flash_led_info != NULL)
-		length = sprintf(buf, "%d %d %d %d\n",
-			p_flash_led_info->led_info->enable,
-			p_flash_led_info->led_info->low_limit_led_state,
-			p_flash_led_info->led_info->max_led_current_ma,
-			p_flash_led_info->led_info->num_led_est_table);
-	else
-		length = sprintf(buf, "%d\n", 0);
-	pr_info("[CAM] %s: length(%d)\n", __func__, length);
-	return length;
-}
-
-static ssize_t flash_led_tbl_get(struct device *dev,
-				struct device_attribute *attr, char *buf)
-{
-	ssize_t length = 0;
-	uint16_t i = 0;
-	char sub[64] = {0};
-	struct camera_led_est *sub_tbl = NULL;
-
-	if (p_flash_led_info != NULL)
-		for (i = 0; i < p_flash_led_info->led_info->num_led_est_table; i++) {
-			sub_tbl = (struct camera_led_est *)
-				(((char *)p_flash_led_info->led_est_table) +
-				(i * sizeof(struct camera_led_est)));
-			if (sub_tbl != NULL) {
-			length += sprintf(sub, "%d %d %d %d %d %d ",
-				sub_tbl->enable,
-				sub_tbl->led_state,
-				sub_tbl->current_ma,
-				sub_tbl->lumen_value,
-				sub_tbl->min_step,
-				sub_tbl->max_step);
-			strcat(buf, sub);
-			}
-		}
-	else
-		length = sprintf(buf, "%d\n", 0);
-	return length;
-}
-
-static DEVICE_ATTR(flash_led_info, 0444,
-	flash_led_info_get,
-	NULL);
-
-static DEVICE_ATTR(flash_led_tbl, 0444,
-	flash_led_tbl_get,
-	NULL);
-//HTC_END
 
 static ssize_t led_ril_status_get(struct device *dev,
 				struct device_attribute *attr, char *buf)
@@ -3508,8 +2560,7 @@ static ssize_t led_ril_status_set(struct device *dev,
 {
 	uint32_t tmp = 0;
 
-	if (buf[1] == '\n')
-		tmp = buf[0] - 0x30;
+	tmp = buf[0] - 0x30; /* only get the first char */
 
 	led_ril_status_value = tmp;
 	pr_info("[CAM]led_ril_status_value = %d\n", led_ril_status_value);
@@ -3529,8 +2580,7 @@ static ssize_t led_wimax_status_set(struct device *dev,
 {
 	uint32_t tmp = 0;
 
-	if (buf[1] == '\n')
-		tmp = buf[0] - 0x30;
+	tmp = buf[0] - 0x30; /* only get the first char */
 
 	led_wimax_status_value = tmp;
 	pr_info("[CAM]led_wimax_status_value = %d\n", led_wimax_status_value);
@@ -3593,32 +2643,17 @@ static DEVICE_ATTR(low_cap_limit, 0444,
 	low_cap_limit_get,
 	NULL);
 
-static int msm_camera_sysfs_init(struct msm_sync *sync)
+static int msm_camera_sysfs_init(struct msm_sync* sync)
 {
 	int ret = 0;
-	CDBG("[CAM] msm_camera:kobject creat and add\n");
+	CDBG("msm_camera:kobject creat and add\n");
 	led_status_obj = kobject_create_and_add("camera_led_status", NULL);
 	if (led_status_obj == NULL) {
 		pr_info("[CAM]msm_camera: subsystem_register failed\n");
 		ret = -ENOMEM;
 		goto error;
 	}
-//HTC_START_Simon.Ti_Liu_20120209 linear led
-	ret = sysfs_create_file(led_status_obj,
-		&dev_attr_flash_led_info.attr);
-	if (ret) {
-		pr_info("[CAM]msm_camera: sysfs_create_file flash_led_info failed\n");
-		ret = -EFAULT;
-		goto error;
-	}
-	ret = sysfs_create_file(led_status_obj,
-		&dev_attr_flash_led_tbl.attr);
-	if (ret) {
-		pr_info("[CAM]msm_camera: sysfs_create_file flash_led_tbl failed\n");
-		ret = -EFAULT;
-		goto error;
-	}
-//HTC_END
+
 	ret = sysfs_create_file(led_status_obj,
 		&dev_attr_led_ril_status.attr);
 	if (ret) {
@@ -3646,7 +2681,7 @@ static int msm_camera_sysfs_init(struct msm_sync *sync)
 	ret = sysfs_create_file(led_status_obj,
 		&dev_attr_low_temp_limit.attr);
 	if (ret) {
-		pr_info("[CAM]msm_camera:sysfs_create_file low_temp_limit failed\n");
+		pr_info("[CAM]msm_camera: sysfs_create_file low_temp_limit failed\n");
 		ret = -EFAULT;
 		goto error;
 	}
@@ -3658,26 +2693,17 @@ static int msm_camera_sysfs_init(struct msm_sync *sync)
 		ret = -EFAULT;
 		goto error;
 	}
-//HTC_START_Simon.Ti_Liu_20120209 linear led
-	if ((sync->sdata->flash_type != MSM_CAMERA_FLASH_NONE) &&
-		sync->sdata->flash_cfg && sync->sdata->flash_cfg->flash_info) {
-		p_flash_led_info = sync->sdata->flash_cfg->flash_info;
-	} else {
-		p_flash_led_info = NULL;
-	}
-//HTC_END
+
 	led_low_temp_limit = sync->sdata->flash_cfg->low_temp_limit;
 	led_low_cap_limit = sync->sdata->flash_cfg->low_cap_limit;
 
-
 	return ret;
-
 error:
 	kobject_del(led_status_obj);
 	return ret;
 }
 
-
+#ifdef CONFIG_MSM_CAMERA_V4L2
 int msm_v4l2_register(struct msm_v4l2_driver *drv)
 {
 	/* FIXME: support multiple sensors */
@@ -3704,6 +2730,7 @@ int msm_v4l2_unregister(struct msm_v4l2_driver *drv)
 	return 0;
 }
 EXPORT_SYMBOL(msm_v4l2_unregister);
+#endif
 
 static int msm_sync_init(struct msm_sync *sync,
 		struct platform_device *pdev,
@@ -3717,64 +2744,48 @@ static int msm_sync_init(struct msm_sync *sync,
 	msm_queue_init(&sync->event_q, "event");
 	msm_queue_init(&sync->frame_q, "frame");
 	msm_queue_init(&sync->pict_q, "pict");
-	msm_queue_init(&sync->vpe_q, "vpe");
 
-	pm_qos_add_request(&sync->idle_pm_qos, PM_QOS_CPU_DMA_LATENCY,
-							PM_QOS_DEFAULT_VALUE);
-	if (!sync->sdata->use_rawchip) {
-		rc = msm_camio_probe_on(pdev);
-		if (rc < 0)
-			return rc;
-	}
+	wake_lock_init(&sync->wake_suspend_lock, WAKE_LOCK_SUSPEND, "msm_camera_wake");
+	wake_lock_init(&sync->wake_lock, WAKE_LOCK_IDLE, "msm_camera");
+
+	rc = msm_camio_probe_on(pdev);
+	if (rc < 0)
+		return rc;
 	sctrl.node = camera_node;
-
-#ifdef CONFIG_RAWCHIP
-	if (sync->sdata->use_rawchip) {
-		rc = rawchip_probe_init();
-	}
-#endif
-
-	pr_info("[CAM] sctrl.node %d\n", sctrl.node);
+	pr_info("[CAM]sctrl.node %d\n", sctrl.node);
 	rc = sensor_probe(sync->sdata, &sctrl);
 	if (rc >= 0) {
 		sync->pdev = pdev;
 		sync->sctrl = sctrl;
 	}
-#ifdef CONFIG_RAWCHIP
-	rawchip_probe_deinit();
-#endif
-	if (!sync->sdata->use_rawchip) {
-		msm_camio_probe_off(pdev);
-	}
+	msm_camio_probe_off(pdev);
 	if (rc < 0) {
-		pr_err("[CAM] %s: failed to initialize %s\n",
+		pr_err("[CAM]%s: failed to initialize %s\n",
 			__func__,
 			sync->sdata->sensor_name);
-		pm_qos_remove_request(&sync->idle_pm_qos);
+		wake_lock_destroy(&sync->wake_suspend_lock);
+		wake_lock_destroy(&sync->wake_lock);
 		return rc;
 	}
 
 	sync->opencnt = 0;
 	mutex_init(&sync->lock);
-	pr_info("[CAM] %s: initialized %s\n", __func__, sync->sdata->sensor_name);
+	CDBG("%s: initialized %s\n", __func__, sync->sdata->sensor_name);
 	return rc;
 }
 
 static int msm_sync_destroy(struct msm_sync *sync)
 {
-	pm_qos_remove_request(&sync->idle_pm_qos);
+	wake_lock_destroy(&sync->wake_suspend_lock);
+	wake_lock_destroy(&sync->wake_lock);
 	return 0;
 }
 
-static int msm_device_init(struct msm_cam_device *pmsm,
+static int msm_device_init(struct msm_device *pmsm,
 		struct msm_sync *sync,
 		int node)
 {
-#ifdef CONFIG_CAMERA_MULTISHOT
-	int dev_num = 4 * node;
-#else
 	int dev_num = 3 * node;
-#endif
 	int rc = msm_setup_cdev(pmsm, node,
 		MKDEV(MAJOR(msm_devno), dev_num),
 		"control", &msm_fops_control);
@@ -3805,35 +2816,13 @@ static int msm_device_init(struct msm_cam_device *pmsm,
 		return rc;
 	}
 
-#ifdef CONFIG_CAMERA_MULTISHOT
-	rc = msm_setup_cdev(pmsm + 3, node,
-		MKDEV(MAJOR(msm_devno), dev_num + 3),
-		"pic", &msm_fops_pic);
-	if (rc < 0) {
-		pr_err("[CAM] %s: error creating pic node: %d\n", __func__, rc);
-		msm_tear_down_cdev(pmsm,
-			MKDEV(MAJOR(msm_devno), dev_num));
-		msm_tear_down_cdev(pmsm + 1,
-			MKDEV(MAJOR(msm_devno), dev_num + 1));
-		msm_tear_down_cdev(pmsm + 2,
-			MKDEV(MAJOR(msm_devno), dev_num + 2));
-		return rc;
-	}
-#endif
-
 	atomic_set(&pmsm[0].opened, 0);
 	atomic_set(&pmsm[1].opened, 0);
 	atomic_set(&pmsm[2].opened, 0);
-#ifdef CONFIG_CAMERA_MULTISHOT
-	atomic_set(&pmsm[3].opened, 0);
-#endif
 
 	pmsm[0].sync = sync;
 	pmsm[1].sync = sync;
 	pmsm[2].sync = sync;
-#ifdef CONFIG_CAMERA_MULTISHOT
-	pmsm[3].sync = sync;
-#endif
 
 	return rc;
 }
@@ -3842,7 +2831,7 @@ int msm_camera_drv_start(struct platform_device *dev,
 		int (*sensor_probe)(struct msm_camera_sensor_info *,
 			struct msm_sensor_ctrl *))
 {
-	struct msm_cam_device *pmsm = NULL;
+	struct msm_device *pmsm = NULL;
 	struct msm_sync *sync;
 	int rc = -ENODEV;
 	static int camera_node = 0;
@@ -3855,11 +2844,7 @@ int msm_camera_drv_start(struct platform_device *dev,
 	if (!msm_class) {
 		/* There are three device nodes per sensor */
 		rc = alloc_chrdev_region(&msm_devno, 0,
-#ifdef CONFIG_CAMERA_MULTISHOT
-				4 * MAX_SENSOR_NUM,
-#else
 				3 * MSM_MAX_CAMERA_SENSORS,
-#endif
 				"msm_camera");
 		if (rc < 0) {
 			pr_err("[CAM]%s: failed to allocate chrdev: %d\n", __func__,
@@ -3876,28 +2861,20 @@ int msm_camera_drv_start(struct platform_device *dev,
 		}
 	}
 
-#ifdef CONFIG_CAMERA_MULTISHOT
-	pmsm = kzalloc(sizeof(struct msm_cam_device) * 4 +
-#else
-	pmsm = kzalloc(sizeof(struct msm_cam_device) * 3 +
-#endif
+	pmsm = kzalloc(sizeof(struct msm_device) * 3 +
 			sizeof(struct msm_sync), GFP_ATOMIC);
 	if (!pmsm)
 		return -ENOMEM;
-#ifdef CONFIG_CAMERA_MULTISHOT
-	sync = (struct msm_sync *)(pmsm + 4);
-#else
 	sync = (struct msm_sync *)(pmsm + 3);
-#endif
+
 	rc = msm_sync_init(sync, dev, sensor_probe, camera_node);
 	if (rc < 0) {
 		kfree(pmsm);
 		return rc;
 	}
 
-	pr_info("[CAM] %s: setting camera node %d\n", __func__, camera_node);
+	CDBG("%s: setting camera node %d\n", __func__, camera_node);
 	rc = msm_device_init(pmsm, sync, camera_node);
-
 	if (rc < 0) {
 		msm_sync_destroy(sync);
 		kfree(pmsm);
@@ -3906,6 +2883,7 @@ int msm_camera_drv_start(struct platform_device *dev,
 
 	if (!!sync->sdata->flash_cfg)
 		msm_camera_sysfs_init(sync);
+
 	camera_node++;
 	list_add(&sync->list, &msm_sensors);
 	return rc;
