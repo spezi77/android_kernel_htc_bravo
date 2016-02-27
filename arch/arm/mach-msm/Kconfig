@@ -374,6 +374,13 @@ config MACH_PRIMODD
 		help
 			Support for Primodd_ct (PDA phone).
 
+config MACH_HTCLEO
+	depends on ARCH_QSD8X50
+	default y
+	bool "HTC Leo"
+	help
+	  Select this to support the HTC Leo device
+
 config MACH_PRIMODS
 		depends on ARCH_MSM7X27A
 		depends on !MSM_STACKED_MEMORY
@@ -1217,7 +1224,7 @@ config BUILD_OMA_DM
 
 config QSD_SVS
 	bool "QSD Static Voltage Scaling"
-	depends on (MACH_QSD8X50_SURF || MACH_QSD8X50_FFA)
+	depends on ARCH_QSD8X50
 	default y
 	select TPS65023
 	help
@@ -1225,7 +1232,7 @@ config QSD_SVS
 
 config QSD_PMIC_DEFAULT_DCDC1
 	int "PMIC default output voltage"
-	depends on (MACH_QSD8X50_SURF || MACH_QSD8X50_FFA)
+	depends on ARCH_QSD8X50
 	default 1250
 	help
 	  This is the PMIC voltage at Linux kernel boot.
@@ -1782,6 +1789,11 @@ config QSD_AUDIO
 	help
 	  Provides PCM, MP3, and AAC audio playback.
 
+config QSD_AUDIO_CALLREC
+	bool "Call recording support [avs333]"
+	depends on QSD_AUDIO || MSM_QDSP6
+	default n
+
 config AUDIO_AAC_PLUS
 	depends on (MSM_ADSP || QSD_AUDIO || MSM7KV2_AUDIO)
 	bool "AAC+ Audio"
@@ -1897,6 +1909,59 @@ config MICROP_COMMON
 	depends on I2C
 	help
 	  HTC Microp-P support.
+
+config HTCLEO_ENABLE_MULTI_TOUCH
+	bool "Support for multitouch"
+	default y
+	depends on MACH_HTCLEO
+	help
+		Add multitouch support for touchscreen
+
+config HTCLEO_TOUCHSCREEN_FILTER
+	bool "Enable touchscreen filter"
+	default y
+	depends on MACH_HTCLEO
+	help
+		Enable input filtering for touchscreen
+
+choice
+	prompt "HTCLEO Keymapping"
+	default HTCLEO_KEYMAP_ANDROID
+
+	config HTCLEO_KEYMAP_ANDROID
+		bool "Keymapping for Android"
+	help
+		Optimized for the default Android GUI
+
+	config HTCLEO_KEYMAP_DPAD
+		bool "Alternative Keymapping"
+	help
+		Useful in GUIs not designed for touch-only use as this enables
+		four direction keys, alt key and enter key. Assumes landscape orientation.
+endchoice
+
+choice
+	prompt "HTCLEO Backlight API type"
+	default HTCLEO_BACKLIGHT_LED
+
+	config HTCLEO_BACKLIGHT_LED
+		bool "Backlight control via LED API"
+	help
+		Needed by Google Android
+
+	config HTCLEO_BACKLIGHT
+	select BACKLIGHT_LCD_SUPPORT
+		bool "Standard backlight API"
+	help
+		Works in standard Linux distros. Tested in GNOME.
+endchoice
+
+config HTCLEO_BTN_BACKLIGHT_MANAGER
+	depends on MACH_HTCLEO
+	default y
+	bool "Use button backlight manager"
+	help
+	  Use kernel button backlight manager to turn on/off backlight
 
 config HTC_HEADSET_MGR
 	tristate "HTC headset manager driver"
