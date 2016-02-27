@@ -25,8 +25,8 @@ void __init msm9615_device_init(void);
 void __init msm9615_map_io(void);
 void __init msm_map_msm9615_io(void);
 void __init msm9615_init_irq(void);
-void config_gpio_table_dbg(uint32_t *, int, char *, int);
-#define config_gpio_table(a, b) config_gpio_table_dbg(a, b, __FILE__, __LINE__)
+
+
 int panel_init_spi_hack(void);
 
 /* for boards with multi-panels builtin */
@@ -110,7 +110,7 @@ extern struct platform_device msm_device_i2c_2;
 
 extern struct platform_device qup_device_i2c;
 
-extern struct platform_device qsd_device_spi;
+//extern struct platform_device qsd_device_spi;
 
 extern struct platform_device msm_gsbi0_qup_i2c_device;
 extern struct platform_device msm_gsbi1_qup_i2c_device;
@@ -140,6 +140,7 @@ extern struct platform_device msm_device_dmov_adm1;
 extern struct platform_device msm_device_nand;
 
 extern struct platform_device msm_device_tssc;
+extern struct platform_device msm_mdp_device;
 
 extern struct platform_device msm_rotator_device;
 
@@ -260,4 +261,5 @@ extern struct platform_device msm_debug_device;
 extern struct platform_device msm_ptm_device;
 #endif
 
+extern struct platform_device qsd8x50_device_acpuclk;
 extern struct platform_device msm7x30_device_acpuclk;

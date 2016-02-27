@@ -162,7 +162,8 @@ struct microp_led_platform_data {
 };
 
 
-
+void config_gpio_table(uint32_t *table, int len);
+void msm_i2c_gpio_init(void);
 
 int htcleo_pm_set_vreg(int enable, unsigned id);
 int __init htcleo_init_panel(void);
