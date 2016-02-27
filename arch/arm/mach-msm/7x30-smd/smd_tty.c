@@ -30,6 +30,10 @@
 #include <mach/msm_smd.h>
 #include "smd_private.h"
 
+#ifdef CONFIG_MACH_HTCLEO
+#include <../../../arch/arm/mach-msm/board-htcleo.h>
+#endif
+
 #define MAX_SMD_TTYS 37
 
 static DEFINE_MUTEX(smd_tty_lock);
@@ -216,7 +220,11 @@ static int smd_tty_write(struct tty_struct *tty, const unsigned char *buf, int l
 	*/
 
 #ifdef CONFIG_ARCH_QSD8X50
+#ifdef CONFIG_MACH_HTCLEO
+	if(len>7 && !init && htcleo_is_nand_boot()) {
+#else
 	if(len>7 && !init) {
+#endif
 		pr_info("NAND boot, writing additional init commands to /dev/smd0");
 
 		call_len = strlen(firstcall);
