@@ -1633,7 +1633,7 @@ config MSM_AVS_HW
 config MSM_HW3D
 	tristate "MSM Hardware 3D Register Driver"
 	depends on ANDROID_PMEM
-	default y
+	default n
 	help
 	  Provides access to registers needed by the userspace OpenGL|ES
 	  library.
@@ -2250,6 +2250,7 @@ config MSM_RPC_VIBRATOR
 	  Enable the vibrator support on MSM over RPC. The vibrator
 	  is connected on the PMIC. Say Y if you want to enable this
 	  feature.
+
 config RPC_VER_60001
 	bool "rpc ver 60001"
 	depends on MSM_ONCRPCROUTER
