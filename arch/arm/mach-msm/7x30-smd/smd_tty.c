@@ -198,12 +198,49 @@ static void smd_tty_close(struct tty_struct *tty, struct file *f)
 static int smd_tty_write(struct tty_struct *tty, const unsigned char *buf, int len)
 {
 	struct smd_tty_info *info = tty->driver_data;
-	int avail;
+	int avail, ret;
+#ifdef CONFIG_ARCH_QSD8X50
+	static int init = 0;
+	// seems to start the modem
+	const unsigned char* firstcall ="AT@BRIC=0\r";
+	// set functionality to low power mode
+	const unsigned char* secondcall="AT+CFUN=0\r";
+	// deregister from the network
+	const unsigned char* thirdcall ="AT+COPS=2\r";
+	unsigned int call_len;
+#endif
 
 	/* if we're writing to a packet channel we will
 	** never be able to write more data than there
 	** is currently space for
 	*/
+
+#ifdef CONFIG_ARCH_QSD8X50
+	if(len>7 && !init) {
+		pr_info("NAND boot, writing additional init commands to /dev/smd0");
+
+		call_len = strlen(firstcall);
+		avail = smd_write_avail(info->ch);
+		if (call_len > avail)
+			call_len = avail;
+		ret = smd_write(info->ch, firstcall, call_len);
+
+		call_len = strlen(secondcall);
+		avail = smd_write_avail(info->ch);
+		if (call_len > avail)
+			call_len = avail;
+		ret = smd_write(info->ch, secondcall, call_len);
+
+		call_len = strlen(thirdcall);
+		avail = smd_write_avail(info->ch);
+		if (call_len > avail)
+			call_len = avail;
+		ret = smd_write(info->ch, thirdcall, call_len);
+
+		init=1;
+	}
+#endif
+
 	avail = smd_write_avail(info->ch);
 	if (len > avail)
 		len = avail;
