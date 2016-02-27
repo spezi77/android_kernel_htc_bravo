@@ -1047,24 +1047,6 @@ static struct platform_device ion_dev = {
 #endif
 
 ///////////////////////////////////////////////////////////////////////
-// RAM-Console
-///////////////////////////////////////////////////////////////////////
-
-static struct resource ram_console_resources[] = {
-	{
-		.start	= (resource_size_t) MSM_RAM_CONSOLE_BASE,
-		.end	= (resource_size_t) (MSM_RAM_CONSOLE_BASE + MSM_RAM_CONSOLE_SIZE - 1),
-		.flags	= IORESOURCE_MEM,
-	},
-};
-
-static struct platform_device ram_console_device = {
-	.name		= "ram_console",
-	.id		= -1,
-	.num_resources	= ARRAY_SIZE(ram_console_resources),
-	.resource	= ram_console_resources,
-};
-///////////////////////////////////////////////////////////////////////
 // Power/Battery
 ///////////////////////////////////////////////////////////////////////
 
@@ -1134,7 +1116,6 @@ struct platform_device btn_backlight_manager = {
 
 static struct platform_device *devices[] __initdata =
 {
-	&ram_console_device,
 #if !defined(CONFIG_MSM_SERIAL_DEBUGGER)
 	&msm_device_uart1,
 #endif
@@ -1403,25 +1384,12 @@ static void __init htcleo_fixup(struct machine_desc *desc, struct tag *tags,
 	mi->bank[0].size = MSM_EBI1_BANK0_SIZE;
 }
 
-#if defined(CONFIG_VERY_EARLY_CONSOLE)
-#if defined(CONFIG_ANDROID_RAM_CONSOLE_EARLY_INIT)
-int __init ram_console_early_init(void);
-#endif
-#endif
 
 static void __init htcleo_map_io(void)
 {
 	msm_map_qsd8x50_io();
 	if (socinfo_init() < 0)
 		printk(KERN_ERR "%s: socinfo_init() failed!\n",__func__);
-
-#if defined(CONFIG_VERY_EARLY_CONSOLE)
-// Init our consoles _really_ early
-#if defined(CONFIG_ANDROID_RAM_CONSOLE_EARLY_INIT)
-	ram_console_early_init();
-#endif
-#endif
-	printk(KERN_ERR "%s: ramconsole init done!\n",__func__);
 }
 
 extern struct sys_timer msm_timer;
