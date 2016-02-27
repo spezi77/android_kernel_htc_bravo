@@ -1384,6 +1384,11 @@ static void __init htcleo_fixup(struct machine_desc *desc, struct tag *tags,
 	mi->bank[0].size = MSM_EBI1_BANK0_SIZE;
 }
 
+static void __init qsd8x50_init_irq(void)
+{
+	msm_init_irq();
+	msm_init_sirc();
+}
 
 static void __init htcleo_map_io(void)
 {
@@ -1399,7 +1404,7 @@ MACHINE_START(HTCLEO, "htcleo")
 	.fixup		= htcleo_fixup,
 	.map_io		= htcleo_map_io,
     .reserve	= qsd8x50_reserve,
-	.init_irq	= msm_init_irq,
+	.init_irq = qsd8x50_init_irq,
 	.init_machine	= htcleo_init,
 	.timer		= &msm_timer,
 MACHINE_END
