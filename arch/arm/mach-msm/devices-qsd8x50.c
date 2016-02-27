@@ -27,6 +27,11 @@
 
 #include <asm/mach/flash.h>
 
+struct platform_device qsd8x50_device_acpuclk = {
+	.name		= "acpuclk-8x50",
+	.id		= -1,
+};
+
 #include <mach/mmc.h>
 #include "clock-pcom.h"
 
@@ -314,60 +319,3 @@ int __init msm_add_sdcc(unsigned int controller,
 
 	return platform_device_register(pdev);
 }
-
-struct clk_lookup msm_clocks_8x50[] = {
-	CLK_PCOM("adm_clk",	ADM_CLK,	NULL, 0),
-	CLK_PCOM("ce_clk",	CE_CLK,		NULL, 0),
-	CLK_PCOM("ebi1_clk",	EBI1_CLK,	NULL, CLK_MIN),
-	CLK_PCOM("ebi2_clk",	EBI2_CLK,	NULL, 0),
-	CLK_PCOM("ecodec_clk",	ECODEC_CLK,	NULL, 0),
-	CLK_PCOM("emdh_clk",	EMDH_CLK,	NULL, OFF | CLK_MINMAX),
-	CLK_PCOM("gp_clk",	GP_CLK,		NULL, 0),
-	CLK_PCOM("grp_clk",	GRP_3D_CLK,	NULL, 0),
-	CLK_PCOM("i2c_clk",	I2C_CLK,	NULL, 0),
-	CLK_PCOM("icodec_rx_clk",	ICODEC_RX_CLK,	NULL, 0),
-	CLK_PCOM("icodec_tx_clk",	ICODEC_TX_CLK,	NULL, 0),
-	CLK_PCOM("imem_clk",	IMEM_CLK,	NULL, OFF),
-	CLK_PCOM("mdc_clk",	MDC_CLK,	NULL, 0),
-	CLK_PCOM("mddi_clk",	PMDH_CLK,	NULL, OFF | CLK_MINMAX),
-	CLK_PCOM("mdp_clk",	MDP_CLK,	NULL, OFF),
-	CLK_PCOM("mdp_lcdc_pclk_clk", MDP_LCDC_PCLK_CLK, NULL, 0),
-	CLK_PCOM("mdp_lcdc_pad_pclk_clk", MDP_LCDC_PAD_PCLK_CLK, NULL, 0),
-	CLK_PCOM("mdp_vsync_clk",	MDP_VSYNC_CLK,	NULL, 0),
-	CLK_PCOM("pbus_clk",	PBUS_CLK,	NULL, CLK_MIN),
-	CLK_PCOM("pcm_clk",	PCM_CLK,	NULL, 0),
-	CLK_PCOM("sdac_clk",	SDAC_CLK,	NULL, OFF),
-	CLK_PCOM("sdc_clk",	SDC1_CLK,	"msm_sdcc.1", OFF),
-	CLK_PCOM("sdc_pclk",	SDC1_P_CLK,	"msm_sdcc.1", OFF),
-	CLK_PCOM("sdc_clk",	SDC2_CLK,	"msm_sdcc.2", OFF),
-	CLK_PCOM("sdc_pclk",	SDC2_P_CLK,	"msm_sdcc.2", OFF),
-	CLK_PCOM("sdc_clk",	SDC3_CLK,	"msm_sdcc.3", OFF),
-	CLK_PCOM("sdc_pclk",	SDC3_P_CLK,	"msm_sdcc.3", OFF),
-	CLK_PCOM("sdc_clk",	SDC4_CLK,	"msm_sdcc.4", OFF),
-	CLK_PCOM("sdc_pclk",	SDC4_P_CLK,	"msm_sdcc.4", OFF),
-	CLK_PCOM("spi_clk",	SPI_CLK,	NULL, 0),
-	CLK_PCOM("tsif_clk",	TSIF_CLK,	NULL, 0),
-	CLK_PCOM("tsif_ref_clk",	TSIF_REF_CLK,	NULL, 0),
-	CLK_PCOM("tv_dac_clk",	TV_DAC_CLK,	NULL, 0),
-	CLK_PCOM("tv_enc_clk",	TV_ENC_CLK,	NULL, 0),
-	CLK_PCOM("uart_clk",	UART1_CLK,	NULL, OFF),
-	CLK_PCOM("uart_clk",	UART2_CLK,	NULL, 0),
-	CLK_PCOM("uart_clk",	UART3_CLK,	"msm_serial.2", OFF),
-	CLK_PCOM("uartdm_clk",	UART1DM_CLK,	NULL, OFF),
-	CLK_PCOM("uartdm_clk",	UART2DM_CLK,	NULL, 0),
-	CLK_PCOM("usb_hs_clk",	USB_HS_CLK,	NULL, OFF),
-	CLK_PCOM("usb_hs_pclk",	USB_HS_P_CLK,	NULL, OFF),
-	CLK_PCOM("usb_otg_clk",	USB_OTG_CLK,	NULL, 0),
-	CLK_PCOM("vdc_clk",	VDC_CLK,	NULL, OFF | CLK_MIN),
-	CLK_PCOM("vfe_clk",	VFE_CLK,	NULL, OFF),
-	CLK_PCOM("vfe_mdc_clk",	VFE_MDC_CLK,	NULL, OFF),
-	CLK_PCOM("vfe_axi_clk",	VFE_AXI_CLK,	NULL, OFF),
-	CLK_PCOM("usb_hs2_clk",	USB_HS2_CLK,	NULL, OFF),
-	CLK_PCOM("usb_hs2_pclk",	USB_HS2_P_CLK,	NULL, OFF),
-	CLK_PCOM("usb_hs3_clk",	USB_HS3_CLK,	NULL, OFF),
-	CLK_PCOM("usb_hs3_pclk",	USB_HS3_P_CLK,	NULL, OFF),
-	CLK_PCOM("usb_phy_clk",	USB_PHY_CLK,	NULL, 0),
-};
-
-unsigned msm_num_clocks_8x50 = ARRAY_SIZE(msm_clocks_8x50);
-
