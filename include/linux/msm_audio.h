@@ -64,8 +64,6 @@
 
 #define	AUDIO_MAX_COMMON_IOCTL_NUM	100
 
-#define	AUDIO_MAX_COMMON_IOCTL_NUM	100
-
 struct msm_audio_config {
 	uint32_t buffer_size;
 	uint32_t buffer_count;
