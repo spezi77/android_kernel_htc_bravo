@@ -386,21 +386,6 @@ static struct platform_device bravo_rfkill = {
 	.id = -1,
 };
 
-static struct resource ram_console_resources[] = {
-	{
-		.start	= MSM_RAM_CONSOLE_BASE,
-		.end	= MSM_RAM_CONSOLE_BASE + MSM_RAM_CONSOLE_SIZE - 1,
-		.flags	= IORESOURCE_MEM,
-	},
-};
-
-static struct platform_device ram_console_device = {
-	.name		= "ram_console",
-	.id		= -1,
-	.num_resources	= ARRAY_SIZE(ram_console_resources),
-	.resource	= ram_console_resources,
-};
-
 static int bravo_ts_power(int on)
 {
 	pr_info("%s: power %d\n", __func__, on);
@@ -1462,7 +1447,6 @@ static struct platform_device *devices[] __initdata = {
 	&bcm_bt_lpm_device,
 #endif
 	&msm_device_uart_dm1,
-	&ram_console_device,
 	&bravo_rfkill,
 	&msm_device_dmov,
 	&msm_device_smd,
