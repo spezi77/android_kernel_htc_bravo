@@ -36,6 +36,7 @@
 #define SPSS_CLK_CNTL_ADDR (MSM_CSR_BASE + 0x100)
 #define SPSS_CLK_SEL_ADDR (MSM_CSR_BASE + 0x104)
 
+/* Scorpion PLL registers */
 #define SCPLL_CTL_ADDR         (MSM_SCPLL_BASE + 0x4)
 #define SCPLL_STATUS_ADDR      (MSM_SCPLL_BASE + 0x18)
 #define SCPLL_FSM_CTL_EXT_ADDR (MSM_SCPLL_BASE + 0x10)
@@ -67,20 +68,21 @@ struct clkctl_acpu_speed {
 	unsigned int     sc_core_src_sel_mask;
 	unsigned int     sc_l_value;
 	int              vdd;
-	unsigned long    lpj;
+	unsigned long    lpj; /* loops_per_jiffy */
 };
 
 struct clkctl_acpu_speed acpu_freq_tbl_998[] = {
 	{ 0, 19200, ACPU_PLL_TCXO, 0, 0, 0, 0, 14000, 0, 0, 1000},
 	{ 0, 128000, ACPU_PLL_1, 1, 5, 0, 0, 14000, 2, 0, 1000},
 	{ 1, 245760, ACPU_PLL_0, 4, 0, 0, 0, 29000, 0, 0, 1000},
+	/* Update AXI_S and PLL0_S macros if above row numbers change. */
 	{ 1, 384000, ACPU_PLL_3, 0, 0, 0, 0, 58000, 1, 0xA, 1000},
 	{ 0, 422400, ACPU_PLL_3, 0, 0, 0, 0, 117000, 1, 0xB, 1000},
 	{ 0, 460800, ACPU_PLL_3, 0, 0, 0, 0, 117000, 1, 0xC, 1000},
 	{ 0, 499200, ACPU_PLL_3, 0, 0, 0, 0, 117000, 1, 0xD, 1050},
 	{ 0, 537600, ACPU_PLL_3, 0, 0, 0, 0, 117000, 1, 0xE, 1050},
 	{ 1, 576000, ACPU_PLL_3, 0, 0, 0, 0, 117000, 1, 0xF, 1050},
-	{ 1, 614400, ACPU_PLL_3, 0, 0, 0, 0, 117000, 1, 0x10, 1075},
+	{ 0, 614400, ACPU_PLL_3, 0, 0, 0, 0, 117000, 1, 0x10, 1075},
 	{ 0, 652800, ACPU_PLL_3, 0, 0, 0, 0, 117000, 1, 0x11, 1100},
 	{ 0, 691200, ACPU_PLL_3, 0, 0, 0, 0, 117000, 1, 0x12, 1125},
 	{ 0, 729600, ACPU_PLL_3, 0, 0, 0, 0, 117000, 1, 0x13, 1150},
@@ -92,9 +94,7 @@ struct clkctl_acpu_speed acpu_freq_tbl_998[] = {
 	{ 0, 960000, ACPU_PLL_3, 0, 0, 0, 0, 128000, 1, 0x19, 1300},
 	{ 1, 998400, ACPU_PLL_3, 0, 0, 0, 0, 128000, 1, 0x1A, 1300},
 	{ 0, 1036800, ACPU_PLL_3,0, 0, 0, 0, 128000, 1, 0x1B, 1300},
-	{ 1, 1190400, ACPU_PLL_3,0, 0, 0, 0, 128000, 1, 0x1C, 1325},
-	{ 0, 1267200, ACPU_PLL_3, 0, 0, 0, 0, 128000, 1, 0x1D, 1325},
-	{ 0, 1305600, ACPU_PLL_3, 0, 0, 0, 0, 128000, 1, 0x1E, 1325},
+	{ 1, 1190400, ACPU_PLL_3,0, 0, 0, 0, 128000, 1, 0x1D, 1325},
 	{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
 };
 
@@ -102,6 +102,7 @@ struct clkctl_acpu_speed acpu_freq_tbl_768[] = {
 	{ 0, 19200, ACPU_PLL_TCXO, 0, 0, 0, 0, 14000, 0, 0, 1000},
 	{ 0, 128000, ACPU_PLL_1, 1, 5, 0, 0, 14000, 2, 0, 1000},
 	{ 1, 245760, ACPU_PLL_0, 4, 0, 0, 0, 29000, 0, 0, 1000},
+	/* Update AXI_S and PLL0_S macros if above row numbers change. */
 	{ 1, 384000, ACPU_PLL_3, 0, 0, 0, 0, 58000, 1, 0xA, 1075},
 	{ 0, 422400, ACPU_PLL_3, 0, 0, 0, 0, 117000, 1, 0xB, 1100},
 	{ 0, 460800, ACPU_PLL_3, 0, 0, 0, 0, 117000, 1, 0xC, 1125},
@@ -120,15 +121,27 @@ static struct clkctl_acpu_speed *acpu_freq_tbl = acpu_freq_tbl_998;
 #define AXI_S	(&acpu_freq_tbl[1])
 #define PLL0_S	(&acpu_freq_tbl[2])
 
+/* Use 128MHz for PC since ACPU will auto-switch to AXI (128MHz) before
+ * coming back up. This allows detection of return-from-PC, since 128MHz
+ * is only used for power collapse. */
 #define POWER_COLLAPSE_KHZ	128000
+/* Use 245MHz (not 128MHz) for SWFI to avoid unnecessary steps between
+ * 128MHz<->245MHz. Jumping to high frequencies from 128MHz directly
+ * is not allowed. */
 #define WAIT_FOR_IRQ_KHZ	245760
 
 #ifdef CONFIG_CPU_FREQ_MSM
-static struct cpufreq_frequency_table freq_table[24];
-static void __devinit cpufreq_table_init(void)
+static struct cpufreq_frequency_table freq_table[20];
+
+static void __init cpufreq_table_init(void)
 {
 	unsigned int i;
 	unsigned int freq_cnt = 0;
+
+	/* Construct the freq_table table from acpu_freq_tbl since the
+	 * freq_table values need to match frequencies specified in
+	 * acpu_freq_tbl and acpu_freq_tbl needs to be fixed up during init.
+	 */
 	for (i = 0; acpu_freq_tbl[i].acpuclk_khz != 0
 			&& freq_cnt < ARRAY_SIZE(freq_table)-1; i++) {
 		if (acpu_freq_tbl[i].use_for_scaling) {
@@ -139,8 +152,13 @@ static void __devinit cpufreq_table_init(void)
 		}
 	}
 
+	/* freq_table not big enough to store all usable freqs. */
+	BUG_ON(acpu_freq_tbl[i].acpuclk_khz != 0);
+
 	freq_table[freq_cnt].index = freq_cnt;
 	freq_table[freq_cnt].frequency = CPUFREQ_TABLE_END;
+
+	pr_info("%d scaling frequencies supported.\n", freq_cnt);
 }
 #endif
 
@@ -162,11 +180,14 @@ static void scpll_set_freq(uint32_t lval, unsigned freq_switch)
 	if (lval < 10)
 		lval = 10;
 
-	while (readl(SCPLL_STATUS_ADDR) & 0x3);
+	/* wait for any calibrations or frequency switches to finish */
+	while (readl(SCPLL_STATUS_ADDR) & 0x3)
+		;
+
+	/* write the new L val and switch mode */
 	regval = readl(SCPLL_FSM_CTL_EXT_ADDR);
 	regval &= ~(0x3f << 3);
 	regval |= (lval << 3);
-
 	if (freq_switch == SIMPLE_SLEW)
 		regval |= (0x1 << 9);
 
@@ -176,19 +197,36 @@ static void scpll_set_freq(uint32_t lval, unsigned freq_switch)
 
 	dmb();
 
+	/* put in normal mode */
 	regval = readl(SCPLL_CTL_ADDR);
 	regval |= 0x7;
 	writel(regval, SCPLL_CTL_ADDR);
 
 	dmb();
-	while (readl(SCPLL_STATUS_ADDR) & 0x1);
-	udelay(90);
+
+	/* wait for frequency switch to finish */
+	while (readl(SCPLL_STATUS_ADDR) & 0x1)
+		;
+
+	/* status bit seems to clear early, using
+	 * 100us to handle the worst case. */
+	udelay(100);
 }
 
 static void scpll_apps_enable(bool state)
 {
 	uint32_t regval;
-	while (readl(SCPLL_STATUS_ADDR) & 0x1);
+
+	if (state)
+		pr_debug("Enabling PLL 3\n");
+	else
+		pr_debug("Disabling PLL 3\n");
+
+	/* Wait for any frequency switches to finish. */
+	while (readl(SCPLL_STATUS_ADDR) & 0x1)
+		;
+
+	/* put the pll in standby mode */
 	regval = readl(SCPLL_CTL_ADDR);
 	regval &= ~(0x7);
 	regval |= (0x2);
@@ -197,16 +235,23 @@ static void scpll_apps_enable(bool state)
 	dmb();
 
 	if (state) {
+		/* put the pll in normal mode */
 		regval = readl(SCPLL_CTL_ADDR);
 		regval |= (0x7);
 		writel(regval, SCPLL_CTL_ADDR);
-		udelay(180);
+		udelay(200);
 	} else {
+		/* put the pll in power down mode */
 		regval = readl(SCPLL_CTL_ADDR);
 		regval &= ~(0x7);
 		writel(regval, SCPLL_CTL_ADDR);
 	}
-	udelay(45);
+	udelay(62);
+
+	if (state)
+		pr_debug("PLL 3 Enabled\n");
+	else
+		pr_debug("PLL 3 Disabled\n");
 }
 
 static void scpll_init(void)
@@ -214,35 +259,81 @@ static void scpll_init(void)
 	uint32_t regval;
 #define L_VAL_384MHZ	0xA
 #define L_VAL_768MHZ	0x14
+
+	pr_debug("Initializing PLL 3\n");
+
+	/* power down scpll */
 	writel(0x0, SCPLL_CTL_ADDR);
+
 	dmb();
+
+	/* set bypassnl, put into standby */
 	writel(0x00400002, SCPLL_CTL_ADDR);
+
+	/* set bypassnl, reset_n, full calibration */
 	writel(0x00600004, SCPLL_CTL_ADDR);
+
+	/* Ensure register write to initiate calibration has taken
+	effect before reading status flag */
 	dmb();
-	while (readl(SCPLL_STATUS_ADDR) & 0x2);
+
+	/* wait for cal_all_done */
+	while (readl(SCPLL_STATUS_ADDR) & 0x2)
+		;
+
+	/* Start: Set of experimentally derived steps
+	 * to work around a h/w bug. */
+
+	/* Put the pll in normal mode */
 	scpll_apps_enable(1);
+
+	/* SHOT switch to 384 MHz */
 	regval = readl(SCPLL_FSM_CTL_EXT_ADDR);
 	regval &= ~(0x3f << 3);
 	regval |= (L_VAL_384MHZ << 3);
+
 	regval &= ~0x7;
 	regval |= SHOT_SWITCH;
 	writel(regval, SCPLL_FSM_CTL_EXT_ADDR);
+
+	/* Trigger the freq switch by putting pll in normal mode. */
 	regval = readl(SCPLL_CTL_ADDR);
 	regval |= (0x7);
 	writel(regval, SCPLL_CTL_ADDR);
-	while (readl(SCPLL_STATUS_ADDR) & 0x1);
-	udelay(720);
+
+	/* Wait for frequency switch to finish */
+	while (readl(SCPLL_STATUS_ADDR) & 0x1)
+		;
+
+	/* Status bit seems to clear early, using
+	 * 800 microseconds for the worst case. */
+	udelay(800);
+
+	/* HOP switch to 768 MHz. */
 	regval = readl(SCPLL_FSM_CTL_EXT_ADDR);
 	regval &= ~(0x3f << 3);
 	regval |= (L_VAL_768MHZ << 3);
+
 	regval &= ~0x7;
 	regval |= HOP_SWITCH;
 	writel(regval, SCPLL_FSM_CTL_EXT_ADDR);
+
+	/* Trigger the freq switch by putting pll in normal mode. */
 	regval = readl(SCPLL_CTL_ADDR);
 	regval |= (0x7);
 	writel(regval, SCPLL_CTL_ADDR);
-	while (readl(SCPLL_STATUS_ADDR) & 0x1);
-	udelay(90);
+
+	/* Wait for frequency switch to finish */
+	while (readl(SCPLL_STATUS_ADDR) & 0x1)
+		;
+
+	/* Status bit seems to clear early, using
+	 * 100 microseconds for the worst case. */
+	udelay(100);
+
+	/* End: Work around for h/w bug */
+
+	/* Power down scpll */
 	scpll_apps_enable(0);
 }
 
@@ -252,8 +343,13 @@ static void config_pll(struct clkctl_acpu_speed *s)
 
 	if (s->pll == ACPU_PLL_3)
 		scpll_set_freq(s->sc_l_value, HOP_SWITCH);
+	/* Configure the PLL divider mux if we plan to use it. */
 	else if (s->sc_core_src_sel_mask == 0) {
+		/* get the current clock source selection */
 		regval = readl(SPSS_CLK_SEL_ADDR) & 0x1;
+
+		/* configure the other clock source, then switch to it,
+		 * using the glitch free mux */
 		switch (regval) {
 		case 0x0:
 			regval = readl(SPSS_CLK_CNTL_ADDR);
@@ -288,8 +384,12 @@ static void config_pll(struct clkctl_acpu_speed *s)
 static int acpuclk_set_vdd_level(int vdd)
 {
 	if (drv_state.acpu_set_vdd) {
+		pr_debug("Switching VDD to %d mV\n", vdd);
 		return drv_state.acpu_set_vdd(vdd);
 	} else {
+		/* Assume that the PMIC supports scaling the processor
+		 * to its maximum frequency at its default voltage.
+		 */
 		return 0;
 	}
 }
@@ -340,8 +440,13 @@ static int acpuclk_8x50_set_rate(int cpu, unsigned long rate,
 		}
 	} else if (reason == SETRATE_PC
 		&& rate != POWER_COLLAPSE_KHZ) {
+		/* Returning from PC. ACPU is running on AXI source.
+		 * Step up to PLL0 before ramping up higher. */
 		config_pll(PLL0_S);
 	}
+
+	pr_debug("Switching from ACPU rate %u KHz -> %u KHz\n",
+		strt_s->acpuclk_khz, tgt_s->acpuclk_khz);
 
 	if (strt_s->pll != ACPU_PLL_3 && tgt_s->pll != ACPU_PLL_3) {
 		config_pll(tgt_s);
@@ -356,9 +461,13 @@ static int acpuclk_8x50_set_rate(int cpu, unsigned long rate,
 		config_pll(tgt_s);
 	}
 
+	/* Update the driver state with the new clock freq */
 	drv_state.current_speed = tgt_s;
+
+	/* Re-adjust lpj for the new clock speed. */
 	loops_per_jiffy = tgt_s->lpj;
 
+	/* Nothing else to do for SWFI. */
 	if (reason == SETRATE_SWFI)
 		goto out;
 
@@ -369,6 +478,7 @@ static int acpuclk_8x50_set_rate(int cpu, unsigned long rate,
 			pr_warning("Setting AXI min rate failed (%d)\n", res);
 	}
 
+	/* Nothing else to do for power collapse */
 	if (reason == SETRATE_PC)
 		goto out;
 
@@ -385,6 +495,8 @@ static int acpuclk_8x50_set_rate(int cpu, unsigned long rate,
 		if (res)
 			pr_warning("Unable to drop ACPU vdd (%d)\n", res);
 	}
+
+	pr_debug("ACPU speed change complete\n");
 out:
 	if (reason == SETRATE_CPUFREQ)
 		mutex_unlock(&drv_state.lock);
@@ -397,10 +509,11 @@ static void __devinit acpuclk_hw_init(void)
 	uint32_t div, sel, regval;
 	int res;
 
+	/* Determine the source of the Scorpion clock. */
 	regval = readl(SPSS_CLK_SEL_ADDR);
 	switch ((regval & 0x6) >> 1) {
-	case 0:
-	case 3:
+	case 0: /* raw source clock */
+	case 3: /* low jitter PLL1 (768Mhz) */
 		if (regval & 0x1) {
 			sel = ((readl(SPSS_CLK_CNTL_ADDR) >> 4) & 0x7);
 			div = ((readl(SPSS_CLK_CNTL_ADDR) >> 0) & 0xf);
@@ -409,6 +522,7 @@ static void __devinit acpuclk_hw_init(void)
 			div = ((readl(SPSS_CLK_CNTL_ADDR) >> 8) & 0xf);
 		}
 
+		/* Find the matching clock rate. */
 		for (speed = acpu_freq_tbl; speed->acpuclk_khz != 0; speed++) {
 			if (speed->acpuclk_src_sel == sel &&
 			    speed->acpuclk_src_div == div)
@@ -416,9 +530,10 @@ static void __devinit acpuclk_hw_init(void)
 		}
 		break;
 
-	case 1:
+	case 1: /* unbuffered scorpion pll (384Mhz to 998.4Mhz) */
 		sel = ((readl(SCPLL_FSM_CTL_EXT_ADDR) >> 3) & 0x3f);
 
+		/* Find the matching clock rate. */
 		for (speed = acpu_freq_tbl; speed->acpuclk_khz != 0; speed++) {
 			if (speed->sc_l_value == sel &&
 			    speed->sc_core_src_sel_mask == 1)
@@ -426,13 +541,16 @@ static void __devinit acpuclk_hw_init(void)
 		}
 		break;
 
-	case 2:
+	case 2: /* AXI bus clock (128Mhz) */
 		speed = AXI_S;
 		break;
 	default:
 		BUG();
 	}
 
+	/* Initialize scpll only if it wasn't already initialized by the boot
+	 * loader. If the CPU is already running on scpll, then the scpll was
+	 * initialized by the boot loader. */
 	if (speed->pll != ACPU_PLL_3)
 		scpll_init();
 
@@ -448,6 +566,8 @@ static void __devinit acpuclk_hw_init(void)
 	res = clk_enable(drv_state.ebi1_clk);
 	if (res < 0)
 		pr_warning("Enabling AXI clock failed (%d)\n", res);
+
+	pr_info("ACPU running at %d KHz\n", speed->acpuclk_khz);
 }
 
 static unsigned long acpuclk_8x50_get_rate(int cpu)
@@ -455,8 +575,10 @@ static unsigned long acpuclk_8x50_get_rate(int cpu)
 	return drv_state.current_speed->acpuclk_khz;
 }
 
+/* Spare register populated with efuse data on max ACPU freq. */
 #define CT_CSR_PHYS		0xA8700000
 #define TCSR_SPARE2_ADDR	(ct_csr_base + 0x60)
+
 #define PLL0_M_VAL_ADDR		(MSM_CLK_CTL_BASE + 0x308)
 
 static void __devinit acpu_freq_tbl_fixup(void)
@@ -465,10 +587,13 @@ static void __devinit acpu_freq_tbl_fixup(void)
 	uint32_t tcsr_spare2, pll0_m_val;
 	unsigned int max_acpu_khz;
 	unsigned int i;
+
 	ct_csr_base = ioremap(CT_CSR_PHYS, PAGE_SIZE);
 	BUG_ON(ct_csr_base == NULL);
+
 	tcsr_spare2 = readl(TCSR_SPARE2_ADDR);
 
+	/* Check if the register is supported and meaningful. */
 	if ((tcsr_spare2 & 0xF000) != 0xA000) {
 		pr_info("Efuse data on Max ACPU freq not present.\n");
 		goto skip_efuse_fixup;
@@ -484,7 +609,7 @@ static void __devinit acpu_freq_tbl_fixup(void)
 		max_acpu_khz = 1190400;
 		break;
 	case 0x10:
-		max_acpu_khz = 1305600;
+		max_acpu_khz = 1267200;
 		break;
 	default:
 		pr_warning("Invalid efuse data (%x) on Max ACPU freq!\n",
@@ -503,6 +628,9 @@ static void __devinit acpu_freq_tbl_fixup(void)
 
 skip_efuse_fixup:
 	iounmap(ct_csr_base);
+
+	/* pll0_m_val will be 36 when PLL0 is run at 235MHz
+	 * instead of the usual 245MHz. */
 	pll0_m_val = readl(PLL0_M_VAL_ADDR) & 0x7FFFF;
 	if (pll0_m_val == 36)
 		PLL0_S->acpuclk_khz = 235930;
@@ -515,6 +643,7 @@ skip_efuse_fixup:
 	}
 }
 
+/* Initalize the lpj field in the acpu_freq_tbl. */
 static void __devinit lpj_init(void)
 {
 	int i;
@@ -585,6 +714,8 @@ static int __devinit acpuclk_8x50_probe(struct platform_device *pdev)
 	acpu_freq_tbl_fixup();
 	acpuclk_hw_init();
 	lpj_init();
+	/* Set a lower bound for ACPU rate for boot. This limits the
+	 * maximum frequency hop caused by the first CPUFREQ switch. */
 	if (drv_state.current_speed->acpuclk_khz < PLL0_S->acpuclk_khz)
 		acpuclk_set_rate(0, PLL0_S->acpuclk_khz, SETRATE_CPUFREQ);
 

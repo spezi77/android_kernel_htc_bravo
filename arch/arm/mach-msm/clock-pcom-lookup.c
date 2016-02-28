@@ -1,4 +1,5 @@
-/* Copyright (c) 2011-2012, Code Aurora Forum. All rights reserved. *
+/* Copyright (c) 2011-2012, Code Aurora Forum. All rights reserved.
+ *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
  * only version 2 as published by the Free Software Foundation.
@@ -170,7 +171,7 @@ static struct clk_lookup msm_clocks_8x50[] = {
 	CLK_LOOKUP("iface_clk",		sdc3_p_clk.c,	"msm_sdcc.3"),
 	CLK_LOOKUP("core_clk",		sdc4_clk.c,	"msm_sdcc.4"),
 	CLK_LOOKUP("iface_clk",		sdc4_p_clk.c,	"msm_sdcc.4"),
-	CLK_LOOKUP("core_clk",		spi_clk.c,	"spi_qsd.0"),
+	CLK_LOOKUP("spi_clk",		spi_clk.c,	"spi_qsd.0"),
 	CLK_DUMMY("iface_clk",		SPI_P_CLK,	"spi_qsd.0", 0),
 	CLK_LOOKUP("core_clk",		tsif_clk.c,	"msm_tsif.0"),
 	CLK_LOOKUP("ref_clk",		tsif_ref_clk.c,	"msm_tsif.0"),
