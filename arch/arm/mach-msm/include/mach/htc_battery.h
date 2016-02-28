@@ -69,12 +69,8 @@ struct battery_info_reply {
 	u32 full_level;		/* Full Level */
 	u32 over_vchg;		/* 0:normal, 1:over voltage charger */
 	s32 eval_current;	/* System loading current from ADC */
-};
-
-struct htc_battery_tps65200_int {
-	int chg_int;
-	int tps65200_reg;
-	struct delayed_work int_work;
+	u32 temp_fault;		/* Battery temperature fault */
+	u32 overloading_charge; /*Charging but Overloading*/
 };
 
 struct htc_battery_platform_data {
@@ -88,7 +84,11 @@ struct htc_battery_platform_data {
 	int guage_driver;
 	int m2a_cable_detect;
 	int charger;
-	struct htc_battery_tps65200_int int_data;
+	unsigned int option_flag;
+	int (*func_is_support_super_charger)(void);
+	int (*func_battery_charging_ctrl)(enum batt_ctl_t ctl);
+	int (*func_battery_gpio_init)(void);
+	int charger_re_enable;
 	int force_no_rpc;
 };
 
@@ -119,10 +119,9 @@ static int batt_unregister_client(struct notifier_block *nb)
 	return 0;
 }
 
-static int batt_notifier_call_chain(unsigned long val, void *v)
-{
-	return 0;
-}
+#ifdef CONFIG_BATTERY_DS2746
+int htc_battery_update_change(int force_update);
+extern int get_cable_type(void); // for cable_status_handler_func wrong issue, henc update from share memory
 #endif
 
 extern unsigned int batt_get_status(enum power_supply_property psp);
