@@ -1718,7 +1718,7 @@ static void __init bravo_init(void)
 	do_sdc1_reset();
 
 	msm_clock_init(&qds8x50_clock_init_data);
-	acpuclk_init(&acpuclk_8x50_soc_data);
+	platform_device_register(&qsd8x50_device_acpuclk);
 
 	msm_gpios_enable(misc_gpio_table, ARRAY_SIZE(misc_gpio_table));
 
