@@ -1390,7 +1390,7 @@ static long ion_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			return -EFAULT;
 		data.flags |= data.heap_mask;
 		data.handle = ion_alloc(client, data.len, data.align,
-					     data.heap_mask, data.flags);
+					     data.flags);
 
 		if (IS_ERR(data.handle))
 			return PTR_ERR(data.handle);
