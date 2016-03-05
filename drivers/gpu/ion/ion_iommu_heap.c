@@ -368,6 +368,10 @@ static struct sg_table *ion_iommu_heap_map_dma(struct ion_heap *heap,
 static void ion_iommu_heap_unmap_dma(struct ion_heap *heap,
 				 struct ion_buffer *buffer)
 {
+	if (buffer->sg_table)
+		sg_free_table(buffer->sg_table);
+	kfree(buffer->sg_table);
+	buffer->sg_table = 0;
 }
 
 static struct ion_heap_ops iommu_heap_ops = {
