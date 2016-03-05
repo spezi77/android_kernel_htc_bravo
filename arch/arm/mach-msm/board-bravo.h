@@ -158,6 +158,9 @@
 #define BRAVO_GPIO_USB_ID_PIN                   142/*for BRAVO USB ID pin*/
 #define BRAVO_GPIO_USB_ID1_PIN          	36/*for BRAVO USB ID pin*/
 
+void config_gpio_table(uint32_t *table, int len);
+void msm_i2c_gpio_init(void);
+
 /* display relative */
 #define BRAVO_LCD_SPI_CLK            (17)
 #define BRAVO_LCD_SPI_DO             (18)
