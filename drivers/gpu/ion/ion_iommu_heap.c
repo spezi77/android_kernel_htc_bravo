@@ -38,8 +38,6 @@ struct ion_iommu_priv_data {
 	struct scatterlist *iommu_sglist;
 };
 
-#define MAX_VMAP_RETRIES 10
-
 static int ion_iommu_heap_allocate(struct ion_heap *heap,
 				      struct ion_buffer *buffer,
 				      unsigned long size, unsigned long align,
@@ -49,12 +47,6 @@ static int ion_iommu_heap_allocate(struct ion_heap *heap,
 	struct ion_iommu_priv_data *data = NULL;
 
 	if (msm_use_iommu()) {
-		struct scatterlist *sg;
-		struct sg_table *table;
-		unsigned int i, j, k;
-		void *ptr = NULL;
-		unsigned int npages_to_vmap, total_pages;
-
 		data = kmalloc(sizeof(*data), GFP_KERNEL);
 		if (!data)
 			return -ENOMEM;
@@ -73,50 +65,16 @@ static int ion_iommu_heap_allocate(struct ion_heap *heap,
 			ret = -ENOMEM;
 			goto err1;
 		}
-		ret = sg_alloc_table(table, data->nrpages, GFP_KERNEL);
-		if (ret)
-			goto err2;
 
-		for_each_sg(table->sgl, sg, table->nents, i) {
-			data->pages[i] = alloc_page(
-				GFP_KERNEL | __GFP_HIGHMEM);
+		sg_init_table(data->iommu_sglist, data->nrpages);
+
+		for (i = 0; i < data->nrpages; i++) {
+			data->pages[i] = alloc_page(GFP_KERNEL | __GFP_ZERO);
 			if (!data->pages[i])
-				goto err3;
+				goto err2;
 
-			sg_set_page(sg, data->pages[i], PAGE_SIZE, 0);
-			sg_dma_address(sg) = sg_phys(sg);
-		}
-
-		/*
-		 * As an optimization, we omit __GFP_ZERO from
-		 * alloc_page above and manually zero out all of the
-		 * pages in one fell swoop here. To safeguard against
-		 * insufficient vmalloc space, we only vmap
-		 * `npages_to_vmap' at a time, starting with a
-		 * conservative estimate of 1/8 of the total number of
-		 * vmalloc pages available.
-		 */
-		npages_to_vmap = ((VMALLOC_END - VMALLOC_START)/8)
-			>> PAGE_SHIFT;
-		total_pages = data->nrpages;
-		for (j = 0; j < total_pages; j += npages_to_vmap) {
-			npages_to_vmap = min(npages_to_vmap, total_pages - j);
-			for (k = 0; k < MAX_VMAP_RETRIES && npages_to_vmap;
-			     ++k) {
-				ptr = vmap(&data->pages[j], npages_to_vmap,
-					VM_IOREMAP, pgprot_kernel);
-				if (ptr)
-					break;
-				else
-					npages_to_vmap >>= 1;
-			}
-			if (!ptr) {
-				pr_err("Couldn't vmap the pages for zeroing\n");
-				ret = -ENOMEM;
-				goto err3;
-			}
-			memset(ptr, 0, npages_to_vmap * PAGE_SIZE);
-			vunmap(ptr);
+			sg_set_page(&data->iommu_sglist[i], data->pages[i],
+				    PAGE_SIZE, 0);
 		}
 
 
@@ -129,8 +87,8 @@ static int ion_iommu_heap_allocate(struct ion_heap *heap,
 
 
 err2:
-	kfree(buffer->sg_table);
-	buffer->sg_table = 0;
+	vfree(data->iommu_sglist);
+	data->iommu_sglist = NULL;
 
 	for (i = 0; i < data->nrpages; i++) {
 		if (data->pages[i])
@@ -152,6 +110,9 @@ static void ion_iommu_heap_free(struct ion_buffer *buffer)
 
 	for (i = 0; i < data->nrpages; i++)
 		__free_page(data->pages[i]);
+
+	vfree(data->iommu_sglist);
+	data->iommu_sglist = NULL;
 
 	kfree(data->pages);
 	kfree(data);
@@ -231,9 +192,8 @@ int ion_iommu_heap_map_iommu(struct ion_buffer *buffer,
 	data->mapped_size = iova_length;
 	extra = iova_length - buffer->size;
 
-	ret = msm_allocate_iova_address(domain_num, partition_num,
-						data->mapped_size, align,
-						&data->iova_addr);
+	data->iova_addr = msm_allocate_iova_address(domain_num, partition_num,
+						data->mapped_size, align);
 
 	if (!data->iova_addr) {
 		ret = -ENOMEM;
@@ -350,10 +310,6 @@ static struct scatterlist *ion_iommu_heap_map_dma(struct ion_heap *heap,
 static void ion_iommu_heap_unmap_dma(struct ion_heap *heap,
 				 struct ion_buffer *buffer)
 {
-	if (buffer->sg_table)
-		sg_free_table(buffer->sg_table);
-	kfree(buffer->sg_table);
-	buffer->sg_table = 0;
 }
 
 static struct ion_heap_ops iommu_heap_ops = {
