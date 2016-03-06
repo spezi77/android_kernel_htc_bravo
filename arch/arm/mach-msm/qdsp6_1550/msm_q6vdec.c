@@ -41,23 +41,18 @@
 #include <linux/mutex.h>
 #include <linux/platform_device.h>
 #include <linux/sched.h>
-#include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/uaccess.h>
 #include <linux/wakelock.h>
+#include <linux/slab.h>
 
 #include <linux/android_pmem.h>
 #include <linux/msm_q6vdec.h>
 
-#include "dal.h"
+#include "../dal.h"
 
 #define DALDEVICEID_VDEC_DEVICE		0x02000026
-
-#ifdef CONFIG_ARCH_MSM7X30_SMD
 #define DALDEVICEID_VDEC_PORTNAME	"DSP_DAL_AQ_VID"
-#else
-#define DALDEVICEID_VDEC_PORTNAME	"DAL_AQ_VID"
-#endif
 
 #define VDEC_INTERFACE_VERSION		0x00020000
 
@@ -72,34 +67,9 @@
 #define TRACE(fmt,x...)			\
 	do { pr_debug("%s:%d " fmt, __func__, __LINE__, ##x); } while (0)
 #else
-#define TRACE(fmt,x...)		do { } while (0)
+#define TRACE(fmt, x...)		do { } while (0)
 #endif
 
-
-static DEFINE_MUTEX(idlecount_lock);
-static int idlecount;
-static struct wake_lock wakelock;
-static struct wake_lock idlelock;
-
-static void prevent_sleep(void)
-{
-	mutex_lock(&idlecount_lock);
-	if (++idlecount == 1) {
-		wake_lock(&idlelock);
-		wake_lock(&wakelock);
-	}
-	mutex_unlock(&idlecount_lock);
-}
-
-static void allow_sleep(void)
-{
-	mutex_lock(&idlecount_lock);
-	if (--idlecount == 0) {
-		wake_unlock(&idlelock);
-		wake_unlock(&wakelock);
-	}
-	mutex_unlock(&idlecount_lock);
-}
 #define MAX_SUPPORTED_INSTANCES 2
 
 enum {
@@ -167,6 +137,31 @@ static dev_t vdec_device_no;
 static struct cdev vdec_cdev;
 static int ref_cnt;
 static DEFINE_MUTEX(vdec_ref_lock);
+
+static DEFINE_MUTEX(idlecount_lock);
+static int idlecount;
+static struct wake_lock wakelock;
+static struct wake_lock idlelock;
+
+static void prevent_sleep(void)
+{
+	mutex_lock(&idlecount_lock);
+	if (++idlecount == 1) {
+		wake_lock(&idlelock);
+		wake_lock(&wakelock);
+	}
+	mutex_unlock(&idlecount_lock);
+}
+
+static void allow_sleep(void)
+{
+	mutex_lock(&idlecount_lock);
+	if (--idlecount == 0) {
+		wake_unlock(&idlelock);
+		wake_unlock(&wakelock);
+	}
+	mutex_unlock(&idlecount_lock);
+}
 
 static inline int vdec_check_version(u32 client, u32 server)
 {
@@ -690,7 +685,6 @@ static long vdec_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			pr_err("%s: remote function failed (%d)\n",
 			       __func__, ret);
 		break;
-
 	case VDEC_IOCTL_GETVERSION:
 		TRACE("VDEC_IOCTL_GETVERSION (pid=%d tid=%d)\n",
 			current->group_leader->pid, current->pid);
@@ -700,7 +694,6 @@ static long vdec_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			pr_err("%s: remote function failed (%d)\n",
 				__func__, ret);
 		break;
-
 	default:
 		pr_err("%s: invalid ioctl!\n", __func__);
 		ret = -EINVAL;
@@ -721,6 +714,7 @@ static void vdec_dcdone_handler(struct vdec_data *vd, void *frame,
 	unsigned long flags;
 	int found = 0;
 
+/*if (frame_size != sizeof(struct vdec_frame_info)) {*/
 	if (frame_size < sizeof(struct vdec_frame_info)) {
 		pr_warning("%s: msg size mismatch %d != %d\n", __func__,
 			   frame_size, sizeof(struct vdec_frame_info));

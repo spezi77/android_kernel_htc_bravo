@@ -25,8 +25,7 @@
 
 #include <linux/msm_audio.h>
 
-#include <mach/msm_qdsp6_audio_1550.h>
-#include "dal_audio.h"
+#include <mach/msm_qdsp6_audio.h>
 
 #define BUFSZ (8192)
 #define DMASZ (BUFSZ * 2)
@@ -41,7 +40,6 @@ struct mp3 {
 static long mp3_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	struct mp3 *mp3 = file->private_data;
-	struct cad_audio_eq_cfg eq_cfg;
 	int rc = 0;
 
 	if (cmd == AUDIO_GET_STATS) {
@@ -61,14 +59,6 @@ static long mp3_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			break;
 		}
 		rc = q6audio_set_stream_volume(mp3->ac, vol);
-		break;
-	}
-	case AUDIO_SET_EQ: {
-		if (copy_from_user(&eq_cfg, (void *)arg, sizeof(struct cad_audio_eq_cfg))) {
-			rc = -EFAULT;
-			break;
-		}
-		rc = q6audio_set_stream_eq(mp3->ac, &eq_cfg);
 		break;
 	}
 	case AUDIO_START: {
@@ -191,7 +181,7 @@ static ssize_t mp3_write(struct file *file, const char __user *buf,
 	return buf - start;
 }
 
-static int mp3_fsync(struct file *f, int datasync)
+static int mp3_fsync(struct file *f, struct dentry *dentry, int datasync)
 {
 	struct mp3 *mp3 = f->private_data;
 	if (mp3->ac)

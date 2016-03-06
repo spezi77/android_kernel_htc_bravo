@@ -1,4 +1,3 @@
-obj-y += dal.o
 obj-y += q6audio.o
 obj-y += pcm_out.o
 obj-y += pcm_in.o
@@ -7,5 +6,4 @@ obj-y += routing.o
 obj-y += audio_ctl.o
 obj-y += msm_q6vdec.o
 obj-y += msm_q6venc.o
-obj-y += aac_in.o
-obj-y += qcelp_in.o
+obj-y += dsp_debug.o

@@ -90,7 +90,6 @@ static struct q6_device_info q6_audio_devices[] = {
 		.codec	= Q6_ICODEC_RX,
 		.hw	= Q6_HW_HANDSET,
 	},
-
 	{
 		.id	= ADSP_AUDIO_DEVICE_ID_HEADSET_SPKR_MONO,
 		.cad_id	= CAD_HW_DEVICE_ID_HEADSET_SPKR_MONO,
@@ -109,7 +108,6 @@ static struct q6_device_info q6_audio_devices[] = {
 		.codec	= Q6_ICODEC_RX,
 		.hw	= Q6_HW_HEADSET,
 	},
-
 	{
 		.id	= ADSP_AUDIO_DEVICE_ID_SPKR_PHONE_MONO,
 		.cad_id	= CAD_HW_DEVICE_ID_SPKR_PHONE_MONO,
@@ -128,7 +126,6 @@ static struct q6_device_info q6_audio_devices[] = {
 		.codec	= Q6_ICODEC_RX,
 		.hw	= Q6_HW_SPEAKER,
 	},
-
 	{
 		.id	= ADSP_AUDIO_DEVICE_ID_SPKR_PHONE_MONO_W_MONO_HEADSET,
 		.cad_id	= CAD_HW_DEVICE_ID_HEADSET_MONO_PLUS_SPKR_MONO_RX,

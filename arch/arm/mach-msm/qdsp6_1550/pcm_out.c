@@ -25,34 +25,25 @@
 
 #include <linux/msm_audio.h>
 
-#include <mach/msm_qdsp6_audio_1550.h>
-#include "dal_audio.h"
-
-#if 0
-#define AUDIO_INFO(x...) pr_info("Audio: "x)
-#else
-#define AUDIO_INFO(x...) do{}while(0)
-#endif
+#include <mach/msm_qdsp6_audio.h>
 
 void audio_client_dump(struct audio_client *ac);
 
-#define BUFSZ (4096) //(3072)
-#define DMASZ (BUFSZ * 2)
-    
+#define BUFSZ (3072)
+
 struct pcm {
 	struct mutex lock;
 	struct audio_client *ac;
 	uint32_t sample_rate;
 	uint32_t channel_count;
+	size_t buffer_size;
 };
 
 static long pcm_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	struct pcm *pcm = file->private_data;
-	struct cad_audio_eq_cfg eq_cfg;
 	int rc = 0;
 
-	AUDIO_INFO("%s: %X %X\n", __func__, cmd, arg);
 	if (cmd == AUDIO_GET_STATS) {
 		struct msm_audio_stats stats;
 		memset(&stats, 0, sizeof(stats));
@@ -78,14 +69,6 @@ static long pcm_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		rc = q6audio_set_stream_volume(pcm->ac, vol);
 		break;
 	}
-	case AUDIO_SET_EQ: {
-		if (copy_from_user(&eq_cfg, (void *)arg, sizeof(struct cad_audio_eq_cfg))) {
-			rc = -EFAULT;
-			break;
-		}
-		rc = q6audio_set_stream_eq(pcm->ac, &eq_cfg);
-		break;
-	}
 	case AUDIO_START: {
 		uint32_t acdb_id;
 		if (arg == 0) {
@@ -98,7 +81,7 @@ static long pcm_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		if (pcm->ac) {
 			rc = -EBUSY;
 		} else {
-			pcm->ac = q6audio_open_pcm(BUFSZ, pcm->sample_rate,
+			pcm->ac = q6audio_open_pcm(pcm->buffer_size, pcm->sample_rate,
 						   pcm->channel_count,
 						   AUDIO_FLAG_WRITE, acdb_id);
 			if (!pcm->ac)
@@ -124,13 +107,22 @@ static long pcm_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			rc = -EINVAL;
 			break;
 		}
+		if (config.sample_rate < 8000 || config.sample_rate > 48000) {
+			rc = -EINVAL;
+			break;
+		}
+		if (config.buffer_size < 128 || config.buffer_size > 8192) {
+			rc = -EINVAL;
+			break;
+		}
 		pcm->sample_rate = config.sample_rate;
 		pcm->channel_count = config.channel_count;
+		pcm->buffer_size = config.buffer_size;
 		break;
 	}
 	case AUDIO_GET_CONFIG: {
 		struct msm_audio_config config;
-		config.buffer_size = BUFSZ;
+		config.buffer_size = pcm->buffer_size;
 		config.buffer_count = 2;
 		config.sample_rate = pcm->sample_rate;
 		config.channel_count = pcm->channel_count;
@@ -153,7 +145,6 @@ static int pcm_open(struct inode *inode, struct file *file)
 {
 	struct pcm *pcm;
 
-	AUDIO_INFO("%s\n", __func__);
 	pr_info("pcm_out: open\n");
 	pcm = kzalloc(sizeof(struct pcm), GFP_KERNEL);
 
@@ -163,6 +154,7 @@ static int pcm_open(struct inode *inode, struct file *file)
 	mutex_init(&pcm->lock);
 	pcm->channel_count = 2;
 	pcm->sample_rate = 44100;
+	pcm->buffer_size = BUFSZ;
 
 	file->private_data = pcm;
 	return 0;
@@ -177,7 +169,6 @@ static ssize_t pcm_write(struct file *file, const char __user *buf,
 	const char __user *start = buf;
 	int xfer;
 
-	AUDIO_INFO("%s: size = %d\n", __func__, count);
 	if (!pcm->ac)
 		pcm_ioctl(file, AUDIO_START, 0);
 
@@ -185,17 +176,14 @@ static ssize_t pcm_write(struct file *file, const char __user *buf,
 	if (!ac)
 		return -ENODEV;
 
-	while (count > 0) 
-    {
+	while (count > 0) {
 		ab = ac->buf + ac->cpu_buf;
 
 		if (ab->used)
-			if (!wait_event_timeout(ac->wait, (ab->used == 0), 5*HZ)) 
-			{
+			if (!wait_event_timeout(ac->wait, (ab->used == 0), 5*HZ)) {
 				audio_client_dump(ac);
 				pr_err("pcm_write: timeout. dsp dead?\n");
-				//BUG();
-				return -EFAULT;
+				q6audio_dsp_not_responding();
 			}
 
 		xfer = count;
@@ -219,8 +207,6 @@ static ssize_t pcm_write(struct file *file, const char __user *buf,
 static int pcm_release(struct inode *inode, struct file *file)
 {
 	struct pcm *pcm = file->private_data;
-
-	AUDIO_INFO("%s\n", __func__);
 	if (pcm->ac)
 		q6audio_close(pcm->ac);
 	kfree(pcm);
