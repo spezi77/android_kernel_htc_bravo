@@ -132,8 +132,7 @@ static struct clkctl_acpu_speed *acpu_freq_tbl = acpu_freq_tbl_998;
 
 #ifdef CONFIG_CPU_FREQ_MSM
 static struct cpufreq_frequency_table freq_table[20];
-
-static void __init cpufreq_table_init(void)
+static void __devinit cpufreq_table_init(void)
 {
 	unsigned int i;
 	unsigned int freq_cnt = 0;
