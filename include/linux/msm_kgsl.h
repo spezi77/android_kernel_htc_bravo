@@ -175,9 +175,9 @@ struct kgsl_devmemstore {
 	unsigned int sbz5;
 };
 
-#define KGSL_MEMSTORE_OFFSET(ctxt_id, field) \
-	((ctxt_id)*sizeof(struct kgsl_devmemstore) + \
-	 offsetof(struct kgsl_devmemstore, field))
+#define KGSL_DEVICE_MEMSTORE_OFFSET(field) \
+	offsetof(struct kgsl_devmemstore, field)
+
 
 /* timestamp id*/
 enum kgsl_timestamp_type {
