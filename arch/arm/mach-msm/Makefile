@@ -146,7 +146,7 @@ obj-$(CONFIG_MSM_RPC_PING) += ping_mdm_rpc_client.o
 obj-$(CONFIG_MSM_RPC_PROC_COMM_TEST) += proc_comm_test.o
 obj-$(CONFIG_MSM_RPC_PING) += ping_mdm_rpc_client.o ping_apps_server.o
 obj-$(CONFIG_MSM_RPC_OEM_RAPI) += oem_rapi_client.o
-#obj-$(CONFIG_MSM_RPC_WATCHDOG) += rpc_dog_keepalive.o
+obj-$(CONFIG_MSM_RPC_WATCHDOG) += rpc_dog_keepalive.o
 obj-$(CONFIG_MSM_RPCSERVER_WATCHDOG) += rpc_server_dog_keepalive.o
 obj-$(CONFIG_MSM_RPCSERVER_TIME_REMOTE) += rpc_server_time_remote.o
 obj-$(CONFIG_MSM_RPCSERVER_HANDSET) += rpc_server_handset.o
@@ -552,9 +552,12 @@ obj-$(CONFIG_HTC_HEADSET_MISC) += htc_headset_misc.o
 obj-$(CONFIG_HTC_HEADSET_MAX8957) += htc_headset_max8957.o
 obj-$(CONFIG_HTC_HEADSET_8X60) += htc_headset_8x60.o
 ifeq ($(CONFIG_ARCH_MSM7X30),y)
-	obj-$(CONFIG_MSM_RMT_STORAGE_CLIENT) += rmt_storage_client-7x30.o
+obj-$(CONFIG_MSM_RMT_STORAGE_CLIENT) += rmt_storage_client-7x30.o
+obj-$(CONFIG_MSM_SSBI) += ssbi.o
 else
-	obj-$(CONFIG_MSM_RMT_STORAGE_CLIENT) += rmt_storage_client.o
+ifneq ($(CONFIG_ARCH_QSD8X50),y)
+obj-$(CONFIG_MSM_RMT_STORAGE_CLIENT) += rmt_storage_client.o
+endif
 endif
 obj-$(CONFIG_MSM_RMT_STORAGE_SERVER) += rmt_storage_server.o
 obj-$(CONFIG_MSM_SDIO_SMEM) += sdio_smem.o

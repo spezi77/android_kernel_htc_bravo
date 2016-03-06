@@ -144,7 +144,7 @@ static int footswitch_enable(struct regulator_dev *rdev)
 	return rc;
 }
 
-#ifdef CONFIG_ARCH_QSD8X50
+#if !defined(CONFIG_ARCH_QSD8X50)
 static int footswitch_disable(struct regulator_dev *rdev)
 {
 	struct footswitch *fs = rdev_get_drvdata(rdev);
@@ -167,7 +167,7 @@ static int footswitch_disable(struct regulator_dev *rdev)
 static struct regulator_ops footswitch_ops = {
 	.is_enabled = footswitch_is_enabled,
 	.enable = footswitch_enable,
-#ifndef CONFIG_ARCH_QSD8X50
+#if !defined(CONFIG_ARCH_QSD8X50)
 	.disable = footswitch_disable,
 #endif
 };

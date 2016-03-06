@@ -22,13 +22,16 @@
 #include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/pm.h>
-#include <linux/pm_qos.h>
+#include <linux/pm_qos_params.h>
 #include <linux/proc_fs.h>
 #include <linux/suspend.h>
 #include <linux/reboot.h>
 #include <linux/uaccess.h>
 #include <linux/io.h>
 #include <linux/memory.h>
+#ifdef CONFIG_HAS_WAKELOCK
+#include <linux/wakelock.h>
+#endif
 #include <linux/rmt_storage_client.h>
 #include <mach/msm_iomap.h>
 #include <mach/system.h>
@@ -86,7 +89,7 @@ module_param_array_named(offalarm, offalarm, uint, &offalarm_size,
 			S_IRUGO | S_IWUSR);
 #endif
 
-static int msm_pm_debug_mask = MSM_PM_DEBUG_CLOCK | MSM_PM_DEBUG_WAKEUP_REASON;
+static int msm_pm_debug_mask = MSM_PM_DEBUG_CLOCK | MSM_PM_DEBUG_WAKEUP_REASON | MSM_PM_DEBUG_SUSPEND | MSM_PM_DEBUG_POWER_COLLAPSE;
 module_param_named(
 	debug_mask, msm_pm_debug_mask, int, S_IRUGO | S_IWUSR | S_IWGRP
 );
@@ -357,7 +360,7 @@ static int __init msm_pm_mode_sysfs_add(void)
 			if ((k == MSM_PM_MODE_ATTR_IDLE) &&
 				(!msm_pm_modes[i].idle_supported))
 				continue;
-
+            sysfs_attr_init(&kobj_attrs[j].attr);
 			kobj_attrs[j].attr.mode = 0644;
 			kobj_attrs[j].show = msm_pm_mode_attr_show;
 			kobj_attrs[j].store = msm_pm_mode_attr_store;
@@ -463,6 +466,13 @@ static void msm_pm_config_hw_before_power_down(void)
 	mb();
 #elif defined(CONFIG_ARCH_MSM7x27A)
 	__raw_writel(0x7, APPS_CLK_SLEEP_EN);
+	mb();
+	__raw_writel(1, APPS_PWRDOWN);
+	mb();
+#elif defined(CONFIG_ARCH_QSD8X50)
+	__raw_writel(0x1f, APPS_CLK_SLEEP_EN);
+	mb();
+	__raw_writel(0, APPS_STANDBY_CTL);
 	mb();
 	__raw_writel(1, APPS_PWRDOWN);
 	mb();
@@ -1496,6 +1506,9 @@ void arch_idle(void)
 	}
 
 	if ((timer_expiration < msm_pm_idle_sleep_min_time) ||
+#ifdef CONFIG_HAS_WAKELOCK
+		has_wake_lock(WAKE_LOCK_IDLE) ||
+#endif
 		!msm_irq_idle_sleep_allowed()) {
 		allow[MSM_PM_SLEEP_MODE_POWER_COLLAPSE] = false;
 		allow[MSM_PM_SLEEP_MODE_POWER_COLLAPSE_NO_XO_SHUTDOWN] = false;
@@ -1851,9 +1864,29 @@ static void msm_pm_power_off(void)
 		;
 }
 
+#if defined(CONFIG_ARCH_QSD8X50)
+static void bravo_save_reset_reason(void)
+{
+	/* save restart_reason to be accesible in bootloader @ ramconsole - 0x1000*/
+	uint32_t *bootloader_reset_reason = ioremap(0x2FFB0000, PAGE_SIZE);
+
+	if (bootloader_reset_reason != NULL)
+	{
+		printk(KERN_INFO "msm_restart saving reason %x @ 0x2FFB0000 \n", restart_reason);
+
+		bootloader_reset_reason[0] = restart_reason;
+		bootloader_reset_reason[1] = restart_reason ^ 0x004b4c63; //XOR with cLK signature so we know is not trash
+	}
+}
+#endif
+
 static void msm_pm_restart(char str, const char *cmd)
 {
 	pr_info("%s: restart_reason 0x%x, cmd %s\n", __func__, restart_reason, (cmd) ? cmd : "NULL");
+
+#if defined(CONFIG_ARCH_QSD8X50)
+	bravo_save_reset_reason();
+#endif
 
 	/* always reboot device through proc comm */
 	if (restart_reason == RESTART_REASON_RIL_FATAL)
