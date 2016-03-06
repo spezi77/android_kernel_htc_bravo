@@ -297,16 +297,6 @@ void notify_cable_status(int status)
 	power_supply_changed(&htc_power_supplies[AC_SUPPLY]);
 	power_supply_changed(&htc_power_supplies[BATTERY_SUPPLY]);
 }
-
-// called from DEX intrrupt
-void notify_vbus_change_intr(void)
-{
-	int vbus;
-	if (!htc_battery_initial)    return;
-	vbus = get_vbus_state();
-	notify_cable_status(vbus);
-}
-
 #endif
 /* -------------------------------------------------------------------------- */
 /* For sleep charging screen. */
