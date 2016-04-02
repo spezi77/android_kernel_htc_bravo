@@ -1792,6 +1792,12 @@ static void __init bravo_init_early(void)
 	bravo_allocate_memory_regions();
 }
 
+static void __init qsd8x50_init_irq(void)
+{
+	msm_init_irq();
+	msm_init_sirc();
+}
+
 static void __init bravo_map_io(void)
 {
     printk("bravo_map_io()\n");
@@ -1812,7 +1818,7 @@ MACHINE_START(BRAVOC, "bravoc")
     .fixup = bravo_fixup,
     .map_io = bravo_map_io,
     .reserve = qsd8x50_reserve,
-    .init_irq = msm_init_irq,
+    .init_irq = qsd8x50_init_irq,
     .init_machine = bravo_init,
     .timer = &msm_timer,
     .init_early = bravo_init_early,
